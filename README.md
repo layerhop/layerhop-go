@@ -91,6 +91,11 @@ func main() {
 | `Status(ctx, provider, id)` | `GET /v1/orders/{provider}/{id}` |
 | `Watch(ctx, provider, id, WatchOptions)` | polls `Status` and yields each state change until the order is final |
 | `ListOrders(ctx, ListOrdersParams)` | `GET /v1/orders?address=&status=&cursor=&limit=` |
+| `CreateCheckoutSession(ctx, CreateCheckoutParams)` | `POST /v1/checkout/sessions` |
+| `ListCheckoutSessions(ctx, ListCheckoutSessionsParams)` | `GET /v1/checkout/sessions?status=&cursor=&limit=` |
+| `GetCheckoutSession(ctx, id)` | `GET /v1/checkout/sessions/{id}` (public) |
+| `ExpireCheckoutSession(ctx, id)` | `POST /v1/checkout/sessions/{id}/expire` |
+| `QuoteCheckoutSession(ctx, id, CheckoutQuoteParams)` | `POST /v1/checkout/sessions/{id}/quote` (public) |
 
 `Options` has these fields: `BaseURL` (default `https://api.layerhop.com`), `APIKey` (sent as `x-api-key`), `Channel` (default `api`), `Integrator`, `IntegratorFeeBps`, `HTTPClient` and `UserAgent`.
 
@@ -105,6 +110,43 @@ Any non-2xx response returns an `*APIError` with these fields:
 - `Message`
 - `Status`
 - `RequestID`
+
+## Checkout (pay with any token)
+
+Get paid in USDC or USDT on the chain you choose while your customer pays with any token on any chain. Create a session with your API key and send the customer to its hosted `URL`. The session becomes `paid` (and a `checkout.session.completed` webhook fires) once the delivery is verified on chain.
+
+```go
+s, err := lh.CreateCheckoutSession(ctx, layerhop.CreateCheckoutParams{
+	Amount: "49000000", // 49 USDC (6 decimals)
+	SettleChain: "base", SettleToken: "USDC",
+	Recipient:   "0xYourPayoutAddress",
+	Description: "Pro plan, 1 month",
+	Reference:   "order_1042",
+	SuccessURL:  "https://shop.example.com/thanks",
+})
+if err != nil {
+	panic(err)
+}
+fmt.Println(s.URL) // redirect the customer here
+
+s, _ = lh.GetCheckoutSession(ctx, s.ID) // s.Status: open | processing | paid | expired | needs_review
+```
+
+To build your own payment page, `GetCheckoutSession` and `QuoteCheckoutSession` are public (no key needed). Pay the chosen quote with `BuildTx` and `ReportSubmitted` as usual:
+
+```go
+q, err := lh.QuoteCheckoutSession(ctx, sessionID, layerhop.CheckoutQuoteParams{
+	SrcChain: "arbitrum", SrcToken: "ETH", Sender: payerAddress,
+})
+// q.Best.SrcAmount is what the payer sends; q.Best.DstAmountMin is at least the amount due.
+tx, err := lh.BuildTx(ctx, q.Best.QuoteID)
+```
+
+`ListCheckoutSessions` pages through your sessions and `ExpireCheckoutSession` cancels an open one. See the [checkout guide](https://docs.layerhop.com/guides/checkout).
+
+## Test mode
+
+Use an `lh_test_` key exactly like a live key. Every request is served by the `sandbox` provider, responses carry `livemode: false` (`QuoteResponse.Livemode`, `Order.Livemode`), and built transactions have `Sandbox: true`. Never broadcast them; report any hash with `ReportSubmitted`. The last digits of `Amount` choose the outcome: `…4001` refunds, `…4002` fails and `…4004` returns `NO_ROUTE`. Checkout sessions created with a test key (`cs_test_…`) are paid through the sandbox too. See the [test mode guide](https://docs.layerhop.com/guides/test-mode).
 
 ## Webhooks
 

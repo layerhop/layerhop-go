@@ -22,7 +22,7 @@ import (
 const DefaultBaseURL = "https://api.layerhop.com"
 
 // Version is the SDK version, sent in the User-Agent header.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Options configure a Client. The zero value is valid.
 type Options struct {
@@ -248,6 +248,69 @@ func (c *Client) ListOrders(ctx context.Context, p ListOrdersParams) (*ListOrder
 	}
 	var out ListOrdersResponse
 	if err := c.do(ctx, http.MethodGet, "/orders", q, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateCheckoutSession creates a checkout session ("pay with any token") and returns it with its
+// hosted URL (POST /v1/checkout/sessions). Needs an API key; an lh_test_ key creates a test-mode
+// session.
+func (c *Client) CreateCheckoutSession(ctx context.Context, p CreateCheckoutParams) (*CheckoutSession, error) {
+	var out CheckoutSession
+	if err := c.do(ctx, http.MethodPost, "/checkout/sessions", nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetCheckoutSession returns a checkout session (GET /v1/checkout/sessions/{id}). Public: without
+// the owner's API key, Reference and Metadata are empty.
+func (c *Client) GetCheckoutSession(ctx context.Context, id string) (*CheckoutSession, error) {
+	var out CheckoutSession
+	if err := c.do(ctx, http.MethodGet, "/checkout/sessions/"+url.PathEscape(id), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListCheckoutSessions lists your sessions of the key's mode, newest first (GET /v1/checkout/sessions).
+func (c *Client) ListCheckoutSessions(ctx context.Context, p ListCheckoutSessionsParams) (*ListCheckoutSessionsResponse, error) {
+	q := url.Values{}
+	if p.Status != "" {
+		q.Set("status", p.Status)
+	}
+	if p.Cursor != "" {
+		q.Set("cursor", p.Cursor)
+	}
+	if p.Limit > 0 {
+		q.Set("limit", strconv.Itoa(p.Limit))
+	}
+	var out ListCheckoutSessionsResponse
+	if err := c.do(ctx, http.MethodGet, "/checkout/sessions", q, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ExpireCheckoutSession cancels an open session so it can no longer be paid
+// (POST /v1/checkout/sessions/{id}/expire). Any other status is a CONFLICT APIError.
+func (c *Client) ExpireCheckoutSession(ctx context.Context, id string) (*CheckoutSession, error) {
+	var out CheckoutSession
+	path := "/checkout/sessions/" + url.PathEscape(id) + "/expire"
+	if err := c.do(ctx, http.MethodPost, path, nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// QuoteCheckoutSession prices paying a session with SrcToken on SrcChain from Sender
+// (POST /v1/checkout/sessions/{id}/quote). Public. Pay the chosen quote with BuildTx and
+// ReportSubmitted as usual.
+func (c *Client) QuoteCheckoutSession(ctx context.Context, id string, p CheckoutQuoteParams) (*CheckoutQuoteResponse, error) {
+	var out CheckoutQuoteResponse
+	path := "/checkout/sessions/" + url.PathEscape(id) + "/quote"
+	if err := c.do(ctx, http.MethodPost, path, nil, p, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

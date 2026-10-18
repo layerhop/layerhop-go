@@ -32,7 +32,9 @@ func (n *NumString) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// ProviderID is a liquidity provider id ("relay", "debridge", "jupiter", ...).
+// ProviderID is a liquidity provider id ("relay", "debridge", "jupiter", ...). "sandbox" serves
+// every request made with an lh_test_ key; "direct" is a plain token transfer, used by checkout
+// when the payer already holds the settlement token.
 type ProviderID = string
 
 // OrderState is the state reported by GET /v1/orders/{provider}/{id}.
@@ -129,6 +131,8 @@ type QuoteResponse struct {
 	Best   Quote             `json:"best"`
 	Quotes []Quote           `json:"quotes"`
 	Errors []ProviderFailure `json:"errors"`
+	// Livemode is false when the request used an lh_test_ key (sandbox quotes). Nil means live.
+	Livemode *bool `json:"livemode,omitempty"`
 }
 
 // Approval is an ERC-20 approve(spender, amount) that must be mined before the main tx.
@@ -154,6 +158,9 @@ type BuiltTx struct {
 	SerializedTx string `json:"serializedTx,omitempty"`
 	// SubmitViaAPI: sign only, then send through Client.Submit instead of an RPC node.
 	SubmitViaAPI bool `json:"submitViaApi,omitempty"`
+
+	// Sandbox is true in test mode: the tx is a placeholder that moves no funds. Never broadcast it.
+	Sandbox bool `json:"sandbox,omitempty"`
 }
 
 // IsEVM reports whether this is an EVM transaction.
@@ -220,8 +227,12 @@ type Order struct {
 	Recipient     string     `json:"recipient,omitempty"`
 	SrcTxHash     string     `json:"srcTxHash,omitempty"`
 	DstTxHash     string     `json:"dstTxHash,omitempty"`
-	CreatedAt     string     `json:"createdAt,omitempty"`
-	UpdatedAt     string     `json:"updatedAt,omitempty"`
+	// Livemode is false for test-mode orders. Nil means live.
+	Livemode *bool `json:"livemode,omitempty"`
+	// CheckoutSessionID is the checkout session this order pays, if any.
+	CheckoutSessionID string `json:"checkoutSessionId,omitempty"`
+	CreatedAt         string `json:"createdAt,omitempty"`
+	UpdatedAt         string `json:"updatedAt,omitempty"`
 }
 
 // ListOrdersParams filter GET /v1/orders. Empty fields are omitted.
@@ -237,4 +248,131 @@ type ListOrdersParams struct {
 type ListOrdersResponse struct {
 	Orders     []Order `json:"orders"`
 	NextCursor string  `json:"nextCursor,omitempty"`
+}
+
+// CheckoutStatus is the status of a checkout session.
+type CheckoutStatus = string
+
+// Checkout session statuses. Paid is final; treat Processing as not yet paid.
+const (
+	CheckoutOpen        CheckoutStatus = "open"
+	CheckoutProcessing  CheckoutStatus = "processing"
+	CheckoutPaid        CheckoutStatus = "paid"
+	CheckoutExpired     CheckoutStatus = "expired"
+	CheckoutNeedsReview CheckoutStatus = "needs_review"
+)
+
+// CreateCheckoutParams are the body of POST /v1/checkout/sessions. Empty optional fields are omitted.
+type CreateCheckoutParams struct {
+	// Amount due, an integer string in base units of the settlement token (49 USDC = "49000000").
+	Amount string `json:"amount"`
+	// SettleChain is a chain id or slug: ethereum, arbitrum, base, optimism, bsc, polygon or solana.
+	SettleChain string `json:"settleChain"`
+	// SettleToken is "USDC" or "USDT" (or its address) on SettleChain.
+	SettleToken string `json:"settleToken"`
+	// Recipient is your payout address on the settlement chain.
+	Recipient    string `json:"recipient"`
+	MerchantName string `json:"merchantName,omitempty"`
+	// Description is shown to the payer.
+	Description string `json:"description,omitempty"`
+	// Reference is your own order id; never shown to the payer.
+	Reference string `json:"reference,omitempty"`
+	// Metadata holds up to 20 string values; never shown to the payer.
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	SuccessURL string            `json:"successUrl,omitempty"`
+	CancelURL  string            `json:"cancelUrl,omitempty"`
+	// ExpiresInMinutes is 5-10080; the API default (60) applies when zero.
+	ExpiresInMinutes int `json:"expiresInMinutes,omitempty"`
+}
+
+// CheckoutSettlement is the token a checkout session is paid out in.
+type CheckoutSettlement struct {
+	ChainID  int64  `json:"chainId"`
+	Token    string `json:"token"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
+}
+
+// CheckoutPayment is the current (or final) payment attempt of a session. JSON nulls decode to
+// zero values.
+type CheckoutPayment struct {
+	QuoteID    string `json:"quoteId"`
+	Payer      string `json:"payer,omitempty"`
+	SrcChainID int64  `json:"srcChainId,omitempty"`
+	SrcToken   string `json:"srcToken,omitempty"`
+	// SrcAmount is what the payer sent, in base units of SrcToken.
+	SrcAmount string `json:"srcAmount,omitempty"`
+	SrcTxHash string `json:"srcTxHash,omitempty"`
+	// DstTxHash is the verified delivery transaction once paid.
+	DstTxHash string `json:"dstTxHash,omitempty"`
+	PaidAt    string `json:"paidAt,omitempty"`
+}
+
+// CheckoutSession is a payment request ("checkout.session"). Nullable strings decode to "".
+type CheckoutSession struct {
+	ID           string             `json:"id"`
+	Object       string             `json:"object"`
+	Livemode     bool               `json:"livemode"`
+	Status       CheckoutStatus     `json:"status"`
+	StatusDetail string             `json:"statusDetail,omitempty"`
+	Amount       string             `json:"amount"`
+	Settlement   CheckoutSettlement `json:"settlement"`
+	Recipient    string             `json:"recipient"`
+	MerchantName string             `json:"merchantName,omitempty"`
+	Description  string             `json:"description,omitempty"`
+	// URL is the hosted checkout page: send the payer here.
+	URL        string `json:"url"`
+	SuccessURL string `json:"successUrl,omitempty"`
+	CancelURL  string `json:"cancelUrl,omitempty"`
+	ExpiresAt  string `json:"expiresAt"`
+	// Payment is nil until a payment is reported.
+	Payment *CheckoutPayment `json:"payment"`
+	// Reference and Metadata are returned only with the owning account's API key.
+	Reference string            `json:"reference,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	CreatedAt string            `json:"createdAt"`
+	UpdatedAt string            `json:"updatedAt"`
+}
+
+// ListCheckoutSessionsParams filter GET /v1/checkout/sessions. Empty fields are omitted.
+type ListCheckoutSessionsParams struct {
+	Status CheckoutStatus
+	Cursor string
+	// Limit is 1-100 (API default 50).
+	Limit int
+}
+
+// ListCheckoutSessionsResponse is the body of GET /v1/checkout/sessions.
+type ListCheckoutSessionsResponse struct {
+	Sessions   []CheckoutSession `json:"sessions"`
+	NextCursor string            `json:"nextCursor,omitempty"`
+}
+
+// CheckoutQuoteParams are the body of POST /v1/checkout/sessions/{id}/quote.
+type CheckoutQuoteParams struct {
+	// SrcChain is the chain the payer pays from (id or slug).
+	SrcChain string `json:"srcChain"`
+	// SrcToken is a token address / mint, curated symbol or native symbol.
+	SrcToken string `json:"srcToken"`
+	// Sender is the payer's address on SrcChain.
+	Sender string `json:"sender"`
+	// SlippageBps is omitted when zero (API default 50).
+	SlippageBps int `json:"slippageBps,omitempty"`
+}
+
+// CheckoutQuote is a Quote for paying a session. DstAmountMin is always >= the amount due.
+type CheckoutQuote struct {
+	Quote
+	// SrcAmount is what the payer sends, in base units of the chosen token.
+	SrcAmount string `json:"srcAmount"`
+}
+
+// CheckoutQuoteResponse is the body of POST /v1/checkout/sessions/{id}/quote. Best == Quotes[0].
+type CheckoutQuoteResponse struct {
+	SessionID string            `json:"sessionId"`
+	Livemode  bool              `json:"livemode"`
+	AmountDue string            `json:"amountDue"`
+	Best      CheckoutQuote     `json:"best"`
+	Quotes    []CheckoutQuote   `json:"quotes"`
+	Errors    []ProviderFailure `json:"errors"`
 }
