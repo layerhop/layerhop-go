@@ -22,7 +22,7 @@ import (
 const DefaultBaseURL = "https://api.layerhop.com"
 
 // Version is the SDK version, sent in the User-Agent header.
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 // Options configure a Client. The zero value is valid.
 type Options struct {
@@ -374,6 +374,128 @@ func (c *Client) StartProductCheckout(ctx context.Context, id string, p StartPro
 	var out CheckoutSession
 	path := "/checkout/products/" + url.PathEscape(id) + "/sessions"
 	if err := c.do(ctx, http.MethodPost, path, nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateInvoice creates an invoice (POST /v1/invoices). It starts as a draft unless Send is true,
+// which finalizes it and emails it to CustomerEmail. Needs an API key; its mode decides the
+// invoice's mode.
+func (c *Client) CreateInvoice(ctx context.Context, p CreateInvoiceParams) (*Invoice, error) {
+	var out Invoice
+	if err := c.do(ctx, http.MethodPost, "/invoices", nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetInvoice returns one of your invoices (GET /v1/invoices/{id}).
+func (c *Client) GetInvoice(ctx context.Context, id string) (*Invoice, error) {
+	var out Invoice
+	if err := c.do(ctx, http.MethodGet, "/invoices/"+url.PathEscape(id), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListInvoices lists your invoices of the key's mode, newest first (GET /v1/invoices).
+func (c *Client) ListInvoices(ctx context.Context, p ListInvoicesParams) (*ListInvoicesResponse, error) {
+	q := url.Values{}
+	if p.Status != "" {
+		q.Set("status", p.Status)
+	}
+	if p.Cursor != "" {
+		q.Set("cursor", p.Cursor)
+	}
+	if p.Limit > 0 {
+		q.Set("limit", strconv.Itoa(p.Limit))
+	}
+	var out ListInvoicesResponse
+	if err := c.do(ctx, http.MethodGet, "/invoices", q, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateInvoice edits a draft invoice; only the fields that are set change
+// (PATCH /v1/invoices/{id}). Any other status is a CONFLICT APIError.
+func (c *Client) UpdateInvoice(ctx context.Context, id string, p UpdateInvoiceParams) (*Invoice, error) {
+	var out Invoice
+	if err := c.do(ctx, http.MethodPatch, "/invoices/"+url.PathEscape(id), nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SendInvoice finalizes a draft (status "open") and emails it to the customer; on an open invoice
+// it re-sends the email (POST /v1/invoices/{id}/send). Paid or void is a CONFLICT APIError.
+func (c *Client) SendInvoice(ctx context.Context, id string) (*Invoice, error) {
+	var out Invoice
+	if err := c.do(ctx, http.MethodPost, "/invoices/"+url.PathEscape(id)+"/send", nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// VoidInvoice cancels a draft or open invoice so it can no longer be paid
+// (POST /v1/invoices/{id}/void). Paid or void is a CONFLICT APIError.
+func (c *Client) VoidInvoice(ctx context.Context, id string) (*Invoice, error) {
+	var out Invoice
+	if err := c.do(ctx, http.MethodPost, "/invoices/"+url.PathEscape(id)+"/void", nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetPublicInvoice returns the customer's view of a sent invoice (GET /v1/invoices/{id}/public).
+// Public, no key needed; owner-only fields are empty. Drafts are NOT_FOUND.
+func (c *Client) GetPublicInvoice(ctx context.Context, id string) (*Invoice, error) {
+	var out Invoice
+	if err := c.do(ctx, http.MethodGet, "/invoices/"+url.PathEscape(id)+"/public", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PayInvoice starts (or reuses) the checkout session that pays an open invoice
+// (POST /v1/invoices/{id}/pay). Public, no key needed. Send the payer to the returned URL.
+func (c *Client) PayInvoice(ctx context.Context, id string) (*PayInvoiceResponse, error) {
+	var out PayInvoiceResponse
+	if err := c.do(ctx, http.MethodPost, "/invoices/"+url.PathEscape(id)+"/pay", nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateRefund refunds (part of) a paid checkout session (POST /v1/checkout/sessions/{id}/refunds).
+// Non-custodial: the response holds a quote; build it with BuildTx, sign it from Quote.From, then
+// ReportSubmitted. The refund completes when the order fills (checkout.session.refunded).
+func (c *Client) CreateRefund(ctx context.Context, sessionID string, p CreateRefundParams) (*CreateRefundResponse, error) {
+	var out CreateRefundResponse
+	path := "/checkout/sessions/" + url.PathEscape(sessionID) + "/refunds"
+	if err := c.do(ctx, http.MethodPost, path, nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListRefunds lists a session's refunds, newest first (GET /v1/checkout/sessions/{id}/refunds).
+func (c *Client) ListRefunds(ctx context.Context, sessionID string) (*ListRefundsResponse, error) {
+	var out ListRefundsResponse
+	path := "/checkout/sessions/" + url.PathEscape(sessionID) + "/refunds"
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ServiceStatus returns LayerHop's public service status, the same data as status.layerhop.com
+// (GET /v1/status): overall state, per-component status and 90-day uptime, and recent incidents.
+// (Status, by contrast, tracks one order.)
+func (c *Client) ServiceStatus(ctx context.Context) (*StatusResponse, error) {
+	var out StatusResponse
+	if err := c.do(ctx, http.MethodGet, "/status", nil, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

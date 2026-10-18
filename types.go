@@ -231,8 +231,10 @@ type Order struct {
 	Livemode *bool `json:"livemode,omitempty"`
 	// CheckoutSessionID is the checkout session this order pays, if any.
 	CheckoutSessionID string `json:"checkoutSessionId,omitempty"`
-	CreatedAt         string `json:"createdAt,omitempty"`
-	UpdatedAt         string `json:"updatedAt,omitempty"`
+	// RefundID is the checkout refund this order executes, if any.
+	RefundID  string `json:"refundId,omitempty"`
+	CreatedAt string `json:"createdAt,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
 }
 
 // ListOrdersParams filter GET /v1/orders. Empty fields are omitted.
@@ -323,10 +325,14 @@ type CheckoutSession struct {
 	// URL is the hosted checkout page: send the payer here.
 	URL string `json:"url"`
 	// ProductID is the product the session was started from, if any.
-	ProductID  string `json:"productId,omitempty"`
-	SuccessURL string `json:"successUrl,omitempty"`
-	CancelURL  string `json:"cancelUrl,omitempty"`
-	ExpiresAt  string `json:"expiresAt"`
+	ProductID string `json:"productId,omitempty"`
+	// InvoiceID is the invoice the session pays, if any.
+	InvoiceID string `json:"invoiceId,omitempty"`
+	// RefundedAmount is the total of completed refunds, in settlement-token base units ("0" if none).
+	RefundedAmount string `json:"refundedAmount,omitempty"`
+	SuccessURL     string `json:"successUrl,omitempty"`
+	CancelURL      string `json:"cancelUrl,omitempty"`
+	ExpiresAt      string `json:"expiresAt"`
 	// Payment is nil until a payment is reported.
 	Payment *CheckoutPayment `json:"payment"`
 	// Reference and Metadata are returned only with the owning account's API key.
@@ -507,4 +513,272 @@ type StartProductCheckoutParams struct {
 	Reference string `json:"reference,omitempty"`
 	// Metadata holds up to 10 string values.
 	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// InvoiceStatus is an invoice's lifecycle state.
+type InvoiceStatus = string
+
+// Invoice statuses.
+const (
+	// InvoiceDraft is editable and not visible to the customer.
+	InvoiceDraft InvoiceStatus = "draft"
+	// InvoiceOpen was sent and can be paid.
+	InvoiceOpen InvoiceStatus = "open"
+	// InvoicePaid was paid through checkout.
+	InvoicePaid InvoiceStatus = "paid"
+	// InvoiceVoid was cancelled and can no longer be paid.
+	InvoiceVoid InvoiceStatus = "void"
+)
+
+// InvoiceLineItem is one line of an invoice. UnitAmount is in base units of the settlement token;
+// the line total is UnitAmount × Quantity.
+type InvoiceLineItem struct {
+	Description string `json:"description"`
+	Quantity    int    `json:"quantity"`
+	UnitAmount  string `json:"unitAmount"`
+}
+
+// CreateInvoiceParams are the body of POST /v1/invoices. Empty optional fields are omitted.
+type CreateInvoiceParams struct {
+	// CustomerEmail receives the invoice email (and the receipt once paid).
+	CustomerEmail string `json:"customerEmail,omitempty"`
+	CustomerName  string `json:"customerName,omitempty"`
+	MerchantName  string `json:"merchantName,omitempty"`
+	Memo          string `json:"memo,omitempty"`
+	// LineItems: 1 to 50 lines; the invoice amount is their sum.
+	LineItems []InvoiceLineItem `json:"lineItems"`
+	// SettleChain is a chain slug or id ("base", "8453").
+	SettleChain string `json:"settleChain"`
+	// SettleToken is a stablecoin symbol or address on SettleChain ("USDC").
+	SettleToken string `json:"settleToken"`
+	Recipient   string `json:"recipient"`
+	// DueAt is an ISO 8601 date ("2026-11-01") or date-time.
+	DueAt string `json:"dueAt,omitempty"`
+	// Send finalizes the invoice and emails it right away (status "open").
+	Send bool `json:"send,omitempty"`
+}
+
+// UpdateInvoiceParams are the body of PATCH /v1/invoices/{id} (draft invoices only): only non-nil
+// fields are sent. A pointer to "" clears a nullable field (CustomerEmail, CustomerName,
+// MerchantName, Memo, DueAt) by sending null; a non-nil LineItems replaces every line.
+type UpdateInvoiceParams struct {
+	CustomerEmail *string
+	CustomerName  *string
+	MerchantName  *string
+	Memo          *string
+	LineItems     []InvoiceLineItem
+	SettleChain   *string
+	SettleToken   *string
+	Recipient     *string
+	DueAt         *string
+}
+
+// MarshalJSON sends only the fields that are set.
+func (p UpdateInvoiceParams) MarshalJSON() ([]byte, error) {
+	m := map[string]any{}
+	set := func(key string, v *string) {
+		if v != nil {
+			m[key] = *v
+		}
+	}
+	nullable := func(key string, v *string) {
+		if v == nil {
+			return
+		}
+		if *v == "" {
+			m[key] = nil
+		} else {
+			m[key] = *v
+		}
+	}
+	nullable("customerEmail", p.CustomerEmail)
+	nullable("customerName", p.CustomerName)
+	nullable("merchantName", p.MerchantName)
+	nullable("memo", p.Memo)
+	if p.LineItems != nil {
+		m["lineItems"] = p.LineItems
+	}
+	set("settleChain", p.SettleChain)
+	set("settleToken", p.SettleToken)
+	set("recipient", p.Recipient)
+	nullable("dueAt", p.DueAt)
+	return json.Marshal(m)
+}
+
+// Invoice is a bill sent to a customer by email and paid through checkout ("invoice"). Nullable
+// strings decode to "". CustomerEmail, Recipient, SessionID, SentAt, ReceiptSentAt, VoidedAt and
+// UpdatedAt are returned only to the owner (empty from GetPublicInvoice).
+type Invoice struct {
+	ID       string        `json:"id"`
+	Object   string        `json:"object"`
+	Livemode bool          `json:"livemode"`
+	Number   string        `json:"number"`
+	Status   InvoiceStatus `json:"status"`
+	// MerchantName, CustomerName and Memo are shown on the hosted page and the email.
+	MerchantName string             `json:"merchantName,omitempty"`
+	CustomerName string             `json:"customerName,omitempty"`
+	Memo         string             `json:"memo,omitempty"`
+	LineItems    []InvoiceLineItem  `json:"lineItems"`
+	Amount       string             `json:"amount"`
+	Settlement   CheckoutSettlement `json:"settlement"`
+	DueAt        string             `json:"dueAt,omitempty"`
+	PaidAt       string             `json:"paidAt,omitempty"`
+	// URL is the hosted invoice page (layerhop.com/invoice/{id}).
+	URL string `json:"url"`
+	// ReceiptURL is the PDF receipt, set once the invoice is paid.
+	ReceiptURL    string `json:"receiptUrl,omitempty"`
+	CreatedAt     string `json:"createdAt"`
+	CustomerEmail string `json:"customerEmail,omitempty"`
+	Recipient     string `json:"recipient,omitempty"`
+	// SessionID is the checkout session that pays (or last tried to pay) the invoice.
+	SessionID     string `json:"sessionId,omitempty"`
+	SentAt        string `json:"sentAt,omitempty"`
+	ReceiptSentAt string `json:"receiptSentAt,omitempty"`
+	VoidedAt      string `json:"voidedAt,omitempty"`
+	UpdatedAt     string `json:"updatedAt,omitempty"`
+}
+
+// ListInvoicesParams filter GET /v1/invoices. Empty fields are omitted.
+type ListInvoicesParams struct {
+	Status InvoiceStatus
+	Cursor string
+	// Limit is 1-100 (server default 20).
+	Limit int
+}
+
+// ListInvoicesResponse is one page of invoices, newest first.
+type ListInvoicesResponse struct {
+	Invoices   []Invoice `json:"invoices"`
+	NextCursor string    `json:"nextCursor,omitempty"`
+}
+
+// PayInvoiceResponse is the checkout session that pays an invoice: send the payer to URL.
+type PayInvoiceResponse struct {
+	SessionID string `json:"sessionId"`
+	URL       string `json:"url"`
+}
+
+// RefundStatus is a refund's lifecycle state.
+type RefundStatus = string
+
+// Refund statuses.
+const (
+	// RefundPending: created; waiting for the merchant to sign and report the transaction.
+	RefundPending RefundStatus = "pending"
+	// RefundSubmitted: the transaction was reported and is being tracked.
+	RefundSubmitted RefundStatus = "submitted"
+	// RefundCompleted: delivered to the payer; counted in the session's RefundedAmount.
+	RefundCompleted RefundStatus = "completed"
+	// RefundFailed: the refund order failed or expired (StatusDetail says why).
+	RefundFailed RefundStatus = "failed"
+)
+
+// Refund destinations for CreateRefundParams.To.
+const (
+	// RefundToOriginal sends the refund back in the payer's original chain and token (default).
+	RefundToOriginal = "original"
+	// RefundToSettlement sends the settlement token to the payer's address on the settlement chain.
+	RefundToSettlement = "settlement"
+)
+
+// CreateRefundParams are the body of POST /v1/checkout/sessions/{id}/refunds. Empty fields are
+// omitted.
+type CreateRefundParams struct {
+	// Amount in settlement-token base units; default: everything not yet refunded.
+	Amount string `json:"amount,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	// From is the wallet that signs the refund (default: the session's payout address).
+	From string `json:"from,omitempty"`
+	// To is RefundToOriginal (default) or RefundToSettlement.
+	To string `json:"to,omitempty"`
+}
+
+// RefundDestination is where a refund is delivered.
+type RefundDestination struct {
+	ChainID int64  `json:"chainId"`
+	Token   string `json:"token"`
+	Address string `json:"address"`
+}
+
+// Refund returns (part of) a paid checkout session to its payer ("refund"). Nullable strings
+// decode to "".
+type Refund struct {
+	ID           string            `json:"id"`
+	Object       string            `json:"object"`
+	SessionID    string            `json:"sessionId,omitempty"`
+	Livemode     bool              `json:"livemode"`
+	Status       RefundStatus      `json:"status"`
+	StatusDetail string            `json:"statusDetail,omitempty"`
+	Amount       string            `json:"amount"`
+	Reason       string            `json:"reason,omitempty"`
+	QuoteID      string            `json:"quoteId,omitempty"`
+	To           RefundDestination `json:"to"`
+	TxHash       string            `json:"txHash,omitempty"`
+	CreatedAt    string            `json:"createdAt"`
+	UpdatedAt    string            `json:"updatedAt,omitempty"`
+}
+
+// RefundQuote is the route that executes a refund. Build it with BuildTx(QuoteID), sign it from
+// From, then ReportSubmitted(QuoteID, txHash).
+type RefundQuote struct {
+	QuoteID          string     `json:"quoteId"`
+	Provider         ProviderID `json:"provider"`
+	SrcAmount        string     `json:"srcAmount"`
+	DstAmount        string     `json:"dstAmount"`
+	DstAmountMin     string     `json:"dstAmountMin"`
+	EstimatedSeconds int        `json:"estimatedSeconds"`
+	ExpiresAt        int64      `json:"expiresAt"`
+	// From is the wallet that must sign the refund transaction.
+	From string `json:"from"`
+}
+
+// CreateRefundResponse is the body of POST /v1/checkout/sessions/{id}/refunds.
+type CreateRefundResponse struct {
+	Refund Refund      `json:"refund"`
+	Quote  RefundQuote `json:"quote"`
+	// Next describes the remaining steps (build, sign, report).
+	Next string `json:"next"`
+}
+
+// ListRefundsResponse is every refund of a session, newest first.
+type ListRefundsResponse struct {
+	Refunds []Refund `json:"refunds"`
+}
+
+// StatusDay is one day of a component's uptime history. Uptime is a percentage, nil without data.
+type StatusDay struct {
+	Date   string   `json:"date"`
+	Uptime *float64 `json:"uptime"`
+}
+
+// StatusComponent is one monitored component. Status is "operational", "degraded" or "down".
+type StatusComponent struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Group     string   `json:"group"`
+	Status    string   `json:"status"`
+	LatencyMs *int     `json:"latencyMs"`
+	Uptime90d *float64 `json:"uptime90d"`
+	// Days are the last 90 days, oldest first.
+	Days []StatusDay `json:"days"`
+}
+
+// StatusIncident is an incident from the last 14 days. ResolvedAt is "" while it is ongoing.
+type StatusIncident struct {
+	ID          string `json:"id"`
+	ComponentID string `json:"componentId"`
+	Component   string `json:"component"`
+	Title       string `json:"title"`
+	StartedAt   string `json:"startedAt"`
+	ResolvedAt  string `json:"resolvedAt,omitempty"`
+}
+
+// StatusResponse is the body of GET /v1/status (status.layerhop.com). Status is "operational",
+// "degraded" or "outage".
+type StatusResponse struct {
+	Status     string            `json:"status"`
+	UpdatedAt  string            `json:"updatedAt"`
+	Components []StatusComponent `json:"components"`
+	Incidents  []StatusIncident  `json:"incidents"`
+	URL        string            `json:"url"`
 }

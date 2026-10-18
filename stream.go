@@ -25,6 +25,9 @@ const (
 	EventCheckoutSessionCompleted     WebhookEventType = "checkout.session.completed"
 	EventCheckoutSessionPaymentFailed WebhookEventType = "checkout.session.payment_failed"
 	EventCheckoutSessionExpired       WebhookEventType = "checkout.session.expired"
+	EventCheckoutSessionRefunded      WebhookEventType = "checkout.session.refunded"
+	EventInvoiceSent                  WebhookEventType = "invoice.sent"
+	EventInvoicePaid                  WebhookEventType = "invoice.paid"
 )
 
 // WebhookEvent is the JSON body LayerHop POSTs to your webhook endpoints.
@@ -40,11 +43,14 @@ type WebhookEvent struct {
 	Raw json.RawMessage `json:"-"`
 }
 
-// WebhookEventData holds the object an event is about: Order for order.* events, Session for
-// checkout.session.* events.
+// WebhookEventData holds the objects an event is about: Order for order.* events, Session for
+// checkout.session.* events (plus Refund for checkout.session.refunded), Invoice for invoice.*
+// events (plus the paying Session for invoice.paid).
 type WebhookEventData struct {
 	Order   *Order           `json:"order,omitempty"`
 	Session *CheckoutSession `json:"session,omitempty"`
+	Refund  *Refund          `json:"refund,omitempty"`
+	Invoice *Invoice         `json:"invoice,omitempty"`
 }
 
 // UnmarshalJSON decodes the event and keeps a copy of the payload in Raw.

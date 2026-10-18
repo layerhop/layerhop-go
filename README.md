@@ -103,6 +103,17 @@ func main() {
 | `GetCheckoutProduct(ctx, id)` | `GET /v1/checkout/products/{id}` (public) |
 | `UpdateCheckoutProduct(ctx, id, UpdateCheckoutProductParams)` | `PATCH /v1/checkout/products/{id}` (only set fields) |
 | `StartProductCheckout(ctx, id, StartProductCheckoutParams)` | `POST /v1/checkout/products/{id}/sessions` (public) |
+| `CreateRefund(ctx, sessionID, CreateRefundParams)` | `POST /v1/checkout/sessions/{id}/refunds` |
+| `ListRefunds(ctx, sessionID)` | `GET /v1/checkout/sessions/{id}/refunds` |
+| `CreateInvoice(ctx, CreateInvoiceParams)` | `POST /v1/invoices` |
+| `ListInvoices(ctx, ListInvoicesParams)` | `GET /v1/invoices?status=&cursor=&limit=` |
+| `GetInvoice(ctx, id)` | `GET /v1/invoices/{id}` |
+| `UpdateInvoice(ctx, id, UpdateInvoiceParams)` | `PATCH /v1/invoices/{id}` (drafts only, only set fields) |
+| `SendInvoice(ctx, id)` | `POST /v1/invoices/{id}/send` |
+| `VoidInvoice(ctx, id)` | `POST /v1/invoices/{id}/void` |
+| `GetPublicInvoice(ctx, id)` | `GET /v1/invoices/{id}/public` (public) |
+| `PayInvoice(ctx, id)` | `POST /v1/invoices/{id}/pay` (public) |
+| `ServiceStatus(ctx)` | `GET /v1/status` (public) |
 | `StreamWebhookEvents(ctx)` | `GET /v1/webhooks/stream` (SSE, API key) |
 | `TriggerWebhookEvent(ctx, eventType)` | `POST /v1/webhooks/trigger` (test keys only) |
 
@@ -195,6 +206,67 @@ fmt.Println(s.URL, s.ProductID)
 ```
 
 See the [payment buttons guide](https://docs.layerhop.com/guides/payment-buttons).
+
+## Invoices
+
+Bill a customer by email: line items, a due date and a memo, paid through checkout with any token. `SendInvoice` (or `Send: true` on create) finalizes the draft and emails the hosted page `https://layerhop.com/invoice/{id}`. When it is paid, the invoice becomes `paid`, the customer gets a receipt with a PDF link (`ReceiptURL`) and an `invoice.paid` webhook fires.
+
+```go
+inv, err := lh.CreateInvoice(ctx, layerhop.CreateInvoiceParams{
+	CustomerEmail: "jane@example.com",
+	CustomerName:  "Jane Doe",
+	LineItems: []layerhop.InvoiceLineItem{
+		{Description: "Design work", Quantity: 2, UnitAmount: "100000000"}, // 2 × 100 USDC
+	},
+	SettleChain: "base", SettleToken: "USDC",
+	Recipient: "0xYourPayoutAddress",
+	DueAt:     "2026-11-01",
+	Send:      true, // email it now; leave false to keep a draft
+})
+fmt.Println(inv.Number, inv.Status, inv.URL) // INV-0001 open https://layerhop.com/invoice/inv_...
+
+// Drafts can be edited (a pointer to "" clears a nullable field); open ones can be re-sent or voided.
+memo := "Net 14"
+lh.UpdateInvoice(ctx, draftID, layerhop.UpdateInvoiceParams{Memo: &memo})
+lh.SendInvoice(ctx, draftID)
+lh.VoidInvoice(ctx, inv.ID)
+
+// Public (no key): the customer's side.
+pub, _ := layerhop.New(layerhop.Options{}).GetPublicInvoice(ctx, inv.ID)
+pay, _ := layerhop.New(layerhop.Options{}).PayInvoice(ctx, inv.ID) // send the payer to pay.URL
+```
+
+Statuses: `draft` → `open` → `paid`, or `void`. See the [invoices guide](https://docs.layerhop.com/guides/invoices).
+
+## Refunds
+
+Refunds are non-custodial: you sign them from your own wallet (by default the session's payout address). LayerHop routes the settlement token back to the payer's original chain and token (`To: layerhop.RefundToOriginal`, the default) or sends the settlement token itself (`layerhop.RefundToSettlement`). Leave `Amount` empty to refund everything not yet refunded, or set it for a partial refund.
+
+```go
+r, err := lh.CreateRefund(ctx, sessionID, layerhop.CreateRefundParams{
+	Amount: "10000000", // 10 USDC of the 49 paid
+	Reason: "Damaged item",
+})
+// 1. build, 2. sign from r.Quote.From with your wallet, 3. report the hash
+tx, err := lh.BuildTx(ctx, r.Quote.QuoteID)
+// ... sign and broadcast tx ...
+lh.ReportSubmitted(ctx, r.Quote.QuoteID, txHash)
+
+list, _ := lh.ListRefunds(ctx, sessionID) // pending → submitted → completed | failed
+```
+
+When the refund order fills, the refund is `completed`, the session's `RefundedAmount` grows and a `checkout.session.refunded` webhook fires (with `Data.Session` and `Data.Refund`). See the [refunds guide](https://docs.layerhop.com/guides/refunds).
+
+## Service status
+
+`ServiceStatus` returns the data behind [status.layerhop.com](https://status.layerhop.com): the overall `Status` (`operational`, `degraded` or `outage`), every component with its 90-day uptime, and incidents from the last 14 days. It is public. (`Status` tracks one order.)
+
+```go
+st, err := lh.ServiceStatus(ctx)
+for _, c := range st.Components {
+	fmt.Println(c.Name, c.Status)
+}
+```
 
 ## Test mode
 
