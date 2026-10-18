@@ -98,6 +98,11 @@ func main() {
 | `ExpireCheckoutSession(ctx, id)` | `POST /v1/checkout/sessions/{id}/expire` |
 | `QuoteCheckoutSession(ctx, id, CheckoutQuoteParams)` | `POST /v1/checkout/sessions/{id}/quote` (public) |
 | `StreamCheckoutSession(ctx, id)` | `GET /v1/checkout/sessions/{id}/events` (SSE, public) |
+| `CreateCheckoutProduct(ctx, CreateCheckoutProductParams)` | `POST /v1/checkout/products` |
+| `ListCheckoutProducts(ctx, ListCheckoutProductsParams)` | `GET /v1/checkout/products?active=&cursor=&limit=` |
+| `GetCheckoutProduct(ctx, id)` | `GET /v1/checkout/products/{id}` (public) |
+| `UpdateCheckoutProduct(ctx, id, UpdateCheckoutProductParams)` | `PATCH /v1/checkout/products/{id}` (only set fields) |
+| `StartProductCheckout(ctx, id, StartProductCheckoutParams)` | `POST /v1/checkout/products/{id}/sessions` (public) |
 | `StreamWebhookEvents(ctx)` | `GET /v1/webhooks/stream` (SSE, API key) |
 | `TriggerWebhookEvent(ctx, eventType)` | `POST /v1/webhooks/trigger` (test keys only) |
 
@@ -162,6 +167,34 @@ tx, err := lh.BuildTx(ctx, q.Best.QuoteID)
 ```
 
 `ListCheckoutSessions` pages through your sessions and `ExpireCheckoutSession` cancels an open one. See the [checkout guide](https://docs.layerhop.com/guides/checkout).
+
+## Products and payment buttons
+
+A product is a fixed price (amount, settlement token, payout address and redirect URLs) that anyone may start a session from without being able to change it: the backing for payment buttons, `https://layerhop.com/buy/{id}` links and store plugins. `CreateCheckoutProduct`, `ListCheckoutProducts` and `UpdateCheckoutProduct` need your API key; `GetCheckoutProduct` and `StartProductCheckout` are public.
+
+```go
+p, err := lh.CreateCheckoutProduct(ctx, layerhop.CreateCheckoutProductParams{
+	Name:           "Pro plan",
+	Description:    "1 month",
+	Amount:         "49000000", // 49 USDC
+	SettleChain:    "base",
+	SettleToken:    "USDC",
+	Recipient:      "0xYourPayoutAddress",
+	SuccessURL:     "https://shop.example.com/thanks",
+	AllowedOrigins: []string{"https://shop.example.com"},
+})
+fmt.Println(p.URL) // https://layerhop.com/buy/prod_...: share it or put it behind a button
+
+// Only the fields you set change; a pointer to "" clears a nullable field.
+off := false
+lh.UpdateCheckoutProduct(ctx, p.ID, layerhop.UpdateCheckoutProductParams{Active: &off}) // stops new sessions
+
+// Public (no key): start a session on the product's terms, adding only your order id.
+s, err := layerhop.New(layerhop.Options{}).StartProductCheckout(ctx, p.ID, layerhop.StartProductCheckoutParams{Reference: "order_1042"})
+fmt.Println(s.URL, s.ProductID)
+```
+
+See the [payment buttons guide](https://docs.layerhop.com/guides/payment-buttons).
 
 ## Test mode
 
