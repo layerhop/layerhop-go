@@ -22,7 +22,7 @@ import (
 const DefaultBaseURL = "https://api.layerhop.com"
 
 // Version is the SDK version, sent in the User-Agent header.
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 // Options configure a Client. The zero value is valid.
 type Options struct {
@@ -310,6 +310,69 @@ func (c *Client) ExpireCheckoutSession(ctx context.Context, id string) (*Checkou
 func (c *Client) QuoteCheckoutSession(ctx context.Context, id string, p CheckoutQuoteParams) (*CheckoutQuoteResponse, error) {
 	var out CheckoutQuoteResponse
 	path := "/checkout/sessions/" + url.PathEscape(id) + "/quote"
+	if err := c.do(ctx, http.MethodPost, path, nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateCheckoutProduct creates a product: a fixed price for payment buttons, layerhop.com/buy/{id}
+// links and store plugins (POST /v1/checkout/products). Needs an API key; its mode decides the
+// product's mode.
+func (c *Client) CreateCheckoutProduct(ctx context.Context, p CreateCheckoutProductParams) (*CheckoutProduct, error) {
+	var out CheckoutProduct
+	if err := c.do(ctx, http.MethodPost, "/checkout/products", nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetCheckoutProduct returns a product (GET /v1/checkout/products/{id}). Public: name, price and
+// settlement; with the owner's API key, every field.
+func (c *Client) GetCheckoutProduct(ctx context.Context, id string) (*CheckoutProduct, error) {
+	var out CheckoutProduct
+	if err := c.do(ctx, http.MethodGet, "/checkout/products/"+url.PathEscape(id), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListCheckoutProducts lists your products of the key's mode (GET /v1/checkout/products).
+func (c *Client) ListCheckoutProducts(ctx context.Context, p ListCheckoutProductsParams) (*ListCheckoutProductsResponse, error) {
+	q := url.Values{}
+	if p.Active != nil {
+		q.Set("active", strconv.FormatBool(*p.Active))
+	}
+	if p.Cursor != "" {
+		q.Set("cursor", p.Cursor)
+	}
+	if p.Limit > 0 {
+		q.Set("limit", strconv.Itoa(p.Limit))
+	}
+	var out ListCheckoutProductsResponse
+	if err := c.do(ctx, http.MethodGet, "/checkout/products", q, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateCheckoutProduct changes only the fields that are set (PATCH /v1/checkout/products/{id}).
+// Active false stops new sessions; existing sessions keep their terms.
+func (c *Client) UpdateCheckoutProduct(ctx context.Context, id string, p UpdateCheckoutProductParams) (*CheckoutProduct, error) {
+	var out CheckoutProduct
+	if err := c.do(ctx, http.MethodPatch, "/checkout/products/"+url.PathEscape(id), nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// StartProductCheckout starts a checkout session on a product's terms
+// (POST /v1/checkout/products/{id}/sessions). Public, no key needed; the caller may only add a
+// Reference and Metadata. An inactive product is a CONFLICT APIError. Send the payer to the
+// session's URL.
+func (c *Client) StartProductCheckout(ctx context.Context, id string, p StartProductCheckoutParams) (*CheckoutSession, error) {
+	var out CheckoutSession
+	path := "/checkout/products/" + url.PathEscape(id) + "/sessions"
 	if err := c.do(ctx, http.MethodPost, path, nil, p, &out); err != nil {
 		return nil, err
 	}

@@ -321,7 +321,9 @@ type CheckoutSession struct {
 	MerchantName string             `json:"merchantName,omitempty"`
 	Description  string             `json:"description,omitempty"`
 	// URL is the hosted checkout page: send the payer here.
-	URL        string `json:"url"`
+	URL string `json:"url"`
+	// ProductID is the product the session was started from, if any.
+	ProductID  string `json:"productId,omitempty"`
 	SuccessURL string `json:"successUrl,omitempty"`
 	CancelURL  string `json:"cancelUrl,omitempty"`
 	ExpiresAt  string `json:"expiresAt"`
@@ -375,4 +377,134 @@ type CheckoutQuoteResponse struct {
 	Best      CheckoutQuote     `json:"best"`
 	Quotes    []CheckoutQuote   `json:"quotes"`
 	Errors    []ProviderFailure `json:"errors"`
+}
+
+// CreateCheckoutProductParams are the body of POST /v1/checkout/products. Empty optional fields
+// are omitted.
+type CreateCheckoutProductParams struct {
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	MerchantName string `json:"merchantName,omitempty"`
+	// Amount is the price, an integer string in base units of the settlement token.
+	Amount string `json:"amount"`
+	// SettleChain is a chain id or slug: ethereum, arbitrum, base, optimism, bsc, polygon or solana.
+	SettleChain string `json:"settleChain"`
+	// SettleToken is "USDC" or "USDT" (or its address) on SettleChain.
+	SettleToken string `json:"settleToken"`
+	// Recipient is your payout address on the settlement chain.
+	Recipient  string `json:"recipient"`
+	SuccessURL string `json:"successUrl,omitempty"`
+	CancelURL  string `json:"cancelUrl,omitempty"`
+	// ExpiresInMinutes is the lifetime of each session started from the product (5-10080); the API
+	// default (60) applies when zero.
+	ExpiresInMinutes int `json:"expiresInMinutes,omitempty"`
+	// AllowedOrigins are https origins allowed to start sessions from a browser; empty = any.
+	AllowedOrigins []string `json:"allowedOrigins,omitempty"`
+	// Active defaults to true when nil.
+	Active *bool `json:"active,omitempty"`
+}
+
+// UpdateCheckoutProductParams are the body of PATCH /v1/checkout/products/{id}: only non-nil
+// fields are sent. A pointer to "" clears a nullable field (Description, MerchantName, SuccessURL,
+// CancelURL) by sending null; a non-nil empty AllowedOrigins sends [] (any origin).
+type UpdateCheckoutProductParams struct {
+	Name             *string
+	Description      *string
+	MerchantName     *string
+	Amount           *string
+	SettleChain      *string
+	SettleToken      *string
+	Recipient        *string
+	SuccessURL       *string
+	CancelURL        *string
+	ExpiresInMinutes *int
+	AllowedOrigins   []string
+	Active           *bool
+}
+
+// MarshalJSON sends only the fields that are set.
+func (p UpdateCheckoutProductParams) MarshalJSON() ([]byte, error) {
+	m := map[string]any{}
+	set := func(key string, v *string) {
+		if v != nil {
+			m[key] = *v
+		}
+	}
+	nullable := func(key string, v *string) {
+		if v == nil {
+			return
+		}
+		if *v == "" {
+			m[key] = nil
+		} else {
+			m[key] = *v
+		}
+	}
+	set("name", p.Name)
+	nullable("description", p.Description)
+	nullable("merchantName", p.MerchantName)
+	set("amount", p.Amount)
+	set("settleChain", p.SettleChain)
+	set("settleToken", p.SettleToken)
+	set("recipient", p.Recipient)
+	nullable("successUrl", p.SuccessURL)
+	nullable("cancelUrl", p.CancelURL)
+	if p.ExpiresInMinutes != nil {
+		m["expiresInMinutes"] = *p.ExpiresInMinutes
+	}
+	if p.AllowedOrigins != nil {
+		m["allowedOrigins"] = p.AllowedOrigins
+	}
+	if p.Active != nil {
+		m["active"] = *p.Active
+	}
+	return json.Marshal(m)
+}
+
+// CheckoutProduct is a fixed price for payment buttons, layerhop.com/buy/{id} links and store
+// plugins ("checkout.product"). Nullable strings decode to "". Recipient, SuccessURL, CancelURL,
+// ExpiresInMinutes, AllowedOrigins, CreatedAt and UpdatedAt are returned only with the owner's key.
+type CheckoutProduct struct {
+	ID           string             `json:"id"`
+	Object       string             `json:"object"`
+	Livemode     bool               `json:"livemode"`
+	Active       bool               `json:"active"`
+	Name         string             `json:"name"`
+	Description  string             `json:"description,omitempty"`
+	MerchantName string             `json:"merchantName,omitempty"`
+	Amount       string             `json:"amount"`
+	Settlement   CheckoutSettlement `json:"settlement"`
+	// URL is https://layerhop.com/buy/{id}: it starts a session and opens the payment page.
+	URL              string   `json:"url"`
+	Recipient        string   `json:"recipient,omitempty"`
+	SuccessURL       string   `json:"successUrl,omitempty"`
+	CancelURL        string   `json:"cancelUrl,omitempty"`
+	ExpiresInMinutes int      `json:"expiresInMinutes,omitempty"`
+	AllowedOrigins   []string `json:"allowedOrigins,omitempty"`
+	CreatedAt        string   `json:"createdAt,omitempty"`
+	UpdatedAt        string   `json:"updatedAt,omitempty"`
+}
+
+// ListCheckoutProductsParams filter GET /v1/checkout/products. Empty fields are omitted.
+type ListCheckoutProductsParams struct {
+	// Active filters by state when non-nil.
+	Active *bool
+	Cursor string
+	// Limit is 1-100 (API default 50).
+	Limit int
+}
+
+// ListCheckoutProductsResponse is the body of GET /v1/checkout/products.
+type ListCheckoutProductsResponse struct {
+	Products   []CheckoutProduct `json:"products"`
+	NextCursor string            `json:"nextCursor,omitempty"`
+}
+
+// StartProductCheckoutParams are the body of POST /v1/checkout/products/{id}/sessions: the only
+// things a caller may add to the product's terms.
+type StartProductCheckoutParams struct {
+	// Reference is your order id, returned in the session and its webhooks.
+	Reference string `json:"reference,omitempty"`
+	// Metadata holds up to 10 string values.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
