@@ -90,18 +90,37 @@ func main() {
 | `Simulate(ctx, quoteID)` | `POST /v1/simulate` |
 | `Status(ctx, provider, id)` | `GET /v1/orders/{provider}/{id}` |
 | `Watch(ctx, provider, id, WatchOptions)` | polls `Status` and yields each state change until the order is final |
+| `StreamOrder(ctx, quoteID)` | `GET /v1/orders/{quoteId}/events` (SSE), yields the order until final |
 | `ListOrders(ctx, ListOrdersParams)` | `GET /v1/orders?address=&status=&cursor=&limit=` |
 | `CreateCheckoutSession(ctx, CreateCheckoutParams)` | `POST /v1/checkout/sessions` |
 | `ListCheckoutSessions(ctx, ListCheckoutSessionsParams)` | `GET /v1/checkout/sessions?status=&cursor=&limit=` |
 | `GetCheckoutSession(ctx, id)` | `GET /v1/checkout/sessions/{id}` (public) |
 | `ExpireCheckoutSession(ctx, id)` | `POST /v1/checkout/sessions/{id}/expire` |
 | `QuoteCheckoutSession(ctx, id, CheckoutQuoteParams)` | `POST /v1/checkout/sessions/{id}/quote` (public) |
+| `StreamCheckoutSession(ctx, id)` | `GET /v1/checkout/sessions/{id}/events` (SSE, public) |
+| `StreamWebhookEvents(ctx)` | `GET /v1/webhooks/stream` (SSE, API key) |
+| `TriggerWebhookEvent(ctx, eventType)` | `POST /v1/webhooks/trigger` (test keys only) |
 
 `Options` has these fields: `BaseURL` (default `https://api.layerhop.com`), `APIKey` (sent as `x-api-key`), `Channel` (default `api`), `Integrator`, `IntegratorFeeBps`, `HTTPClient` and `UserAgent`.
 
 ### Watch
 
 `Watch` returns an `iter.Seq2[OrderStatus, error]`. It yields once per state change. It stops after a final state or after an error. The error can be an `*APIError`, `ctx.Err()` or `ErrWatchTimeout`, which is raised after 30 minutes by default. Breaking out of the loop stops the polling.
+
+### Live order status
+
+`StreamOrder` follows an order over Server-Sent Events instead of polling. It returns an `iter.Seq2[*Order, error]` that yields the order now and on every change, and ends once the order is final (`filled`, `refunded`, `failed` or `expired`). `StreamCheckoutSession` does the same for a checkout session (until `paid`, `expired` or `needs_review`).
+
+```go
+for o, err := range lh.StreamOrder(ctx, q.Best.QuoteID) {
+	if err != nil {
+		return err // *APIError (ORDER_NOT_FOUND), a network error or ctx.Err()
+	}
+	fmt.Println(o.Status, o.DstTxHash)
+}
+```
+
+An error is yielded once and ends the loop. Breaking out of the loop or cancelling `ctx` closes the connection. Streams are long-lived, so they ignore `HTTPClient.Timeout`; bound them with `ctx`. See the [live status guide](https://docs.layerhop.com/guides/live-status).
 
 ### Errors
 
@@ -163,6 +182,24 @@ func handler(w http.ResponseWriter, r *http.Request) {
 ```
 
 The signature is `t=<unix>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`. By default, timestamps older or newer than 300 s are rejected. Use `SignWebhook` to produce test headers.
+
+### Webhook tools
+
+With an API key, `StreamWebhookEvents` yields your account's webhook events (in the key's live or test mode) as they are created. Each `*WebhookEvent` has typed `Data.Order` / `Data.Session` and the exact payload in `Raw`. `TriggerWebhookEvent` creates a sample event in test mode (test keys only; a live key returns a `FORBIDDEN` `*APIError`).
+
+```go
+lh := layerhop.New(layerhop.Options{APIKey: "lh_test_..."})
+r, err := lh.TriggerWebhookEvent(ctx, layerhop.EventOrderFilled) // r.EventID, r.Deliveries, r.Payload
+if err != nil {
+	return err
+}
+for e, err := range lh.StreamWebhookEvents(ctx) {
+	if err != nil {
+		return err
+	}
+	fmt.Println(e.Type, string(e.Raw))
+}
+```
 
 ## Development
 
