@@ -1,5 +1,7 @@
 # layerhop-go
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/layerhop/layerhop-go.svg)](https://pkg.go.dev/github.com/layerhop/layerhop-go) [![license](https://img.shields.io/badge/license-MIT-7ddec8?labelColor=090d15)](https://opensource.org/license/mit) [![docs](https://img.shields.io/badge/docs-docs.layerhop.com-7ddec8?labelColor=090d15)](https://docs.layerhop.com/sdks/go)
+
 Go client for the [LayerHop](https://layerhop.com) API, which gives you best-price cross-chain and same-chain swaps through one non-custodial API. It mirrors the TypeScript `@layerhop/sdk`.
 
 - Uses only the standard library. Needs Go 1.23+, because `Watch` returns an `iter.Seq2`.
@@ -123,7 +125,7 @@ The signature is `t=<unix>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`. By defau
 ## Development
 
 ```bash
-cd sdks/go && go vet ./... && go test ./...
+go vet ./... && go test ./...
 ```
 
 ## License
