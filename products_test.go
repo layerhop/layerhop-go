@@ -14,7 +14,7 @@ const productJSON = `{"id":"prod_01m57hq2c4x8q6r0v3b5n7p9d","object":"checkout.p
 func ptr[T any](v T) *T { return &v }
 
 func TestVersion(t *testing.T) {
-	if Version != "0.5.0" {
+	if Version != "0.6.0" {
 		t.Fatalf("version %s", Version)
 	}
 }
