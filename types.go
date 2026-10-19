@@ -231,6 +231,8 @@ type Order struct {
 	Livemode *bool `json:"livemode,omitempty"`
 	// CheckoutSessionID is the checkout session this order pays, if any.
 	CheckoutSessionID string `json:"checkoutSessionId,omitempty"`
+	// DepositAddressID is the deposit address this order came from, if any.
+	DepositAddressID string `json:"depositAddressId,omitempty"`
 	// RefundID is the checkout refund this order executes, if any.
 	RefundID  string `json:"refundId,omitempty"`
 	CreatedAt string `json:"createdAt,omitempty"`
@@ -656,6 +658,114 @@ type ListInvoicesResponse struct {
 type PayInvoiceResponse struct {
 	SessionID string `json:"sessionId"`
 	URL       string `json:"url"`
+}
+
+// DepositAddressStatus is a deposit address's state.
+type DepositAddressStatus = string
+
+// Deposit address statuses.
+const (
+	// DepositAddressActive is tracked: deposits sent to it become orders.
+	DepositAddressActive DepositAddressStatus = "active"
+	// DepositAddressDisabled is no longer tracked; tell users not to send to it.
+	DepositAddressDisabled DepositAddressStatus = "disabled"
+)
+
+// CreateDepositAddressParams are the body of POST /v1/deposit-addresses. Empty optional fields are
+// omitted.
+type CreateDepositAddressParams struct {
+	// SrcChain is the chain id or slug the user sends on ("base", "8453").
+	SrcChain string `json:"srcChain"`
+	// SrcToken is the token the user sends (symbol or address on SrcChain).
+	SrcToken string `json:"srcToken"`
+	DstChain string `json:"dstChain"`
+	DstToken string `json:"dstToken"`
+	// Recipient receives DstToken on DstChain.
+	Recipient string `json:"recipient"`
+	// RefundTo is the user's address on SrcChain for refunds. Never a CEX deposit address.
+	RefundTo string `json:"refundTo"`
+	// Reusable defaults to true when nil (any amount, forever, for this route). False makes a
+	// one-time address for exactly Amount.
+	Reusable *bool `json:"reusable,omitempty"`
+	// Amount in base units of SrcToken: required when Reusable is false; otherwise it sizes the
+	// estimate (API default: about $100 of SrcToken).
+	Amount string `json:"amount,omitempty"`
+	// Label is your own tag (1-64 chars), filterable in ListDepositAddresses.
+	Label string `json:"label,omitempty"`
+	// Metadata holds up to 20 string values.
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// Integrator and IntegratorFeeBps default to the client's Options when empty / nil.
+	Integrator       string `json:"integrator,omitempty"`
+	IntegratorFeeBps *int   `json:"integratorFeeBps,omitempty"`
+}
+
+// DepositAddressFees are the fees applied to every deposit. Integrator is "" without a partner.
+type DepositAddressFees struct {
+	OurFeeBps        int    `json:"ourFeeBps"`
+	IntegratorFeeBps int    `json:"integratorFeeBps"`
+	Integrator       string `json:"integrator,omitempty"`
+}
+
+// DepositAddressEstimate prices one deposit of Amount (returned by CreateDepositAddress only).
+type DepositAddressEstimate struct {
+	Amount           string `json:"amount"`
+	DstAmount        string `json:"dstAmount"`
+	DstAmountMin     string `json:"dstAmountMin"`
+	EstimatedSeconds int    `json:"estimatedSeconds"`
+}
+
+// DepositAddress is an address the end user sends Token to on ChainID; the provider delivers
+// DstToken to Recipient on DstChainID ("deposit_address"). LayerHop never holds the funds. Nullable
+// strings decode to "".
+type DepositAddress struct {
+	ID       string               `json:"id"`
+	Object   string               `json:"object"`
+	Livemode bool                 `json:"livemode"`
+	Status   DepositAddressStatus `json:"status"`
+	// Provider is "relay" (live) or "sandbox" (test mode).
+	Provider ProviderID `json:"provider"`
+	// Address is what your user sends Token to on ChainID.
+	Address    string `json:"address"`
+	ChainID    int64  `json:"chainId"`
+	Token      string `json:"token"`
+	DstChainID int64  `json:"dstChainId"`
+	DstToken   string `json:"dstToken"`
+	Recipient  string `json:"recipient"`
+	RefundTo   string `json:"refundTo"`
+	Reusable   bool   `json:"reusable"`
+	// Amount is set on one-time addresses only (base units of Token).
+	Amount        string             `json:"amount,omitempty"`
+	Fees          DepositAddressFees `json:"fees"`
+	Label         string             `json:"label,omitempty"`
+	Metadata      map[string]string  `json:"metadata,omitempty"`
+	DepositCount  int                `json:"depositCount"`
+	LastDepositAt string             `json:"lastDepositAt,omitempty"`
+	CreatedAt     string             `json:"createdAt"`
+	// Estimate is set by CreateDepositAddress only.
+	Estimate *DepositAddressEstimate `json:"estimate,omitempty"`
+	// Deposits are the 20 most recent deposit orders, newest first (GetDepositAddress only).
+	Deposits []Order `json:"deposits,omitempty"`
+}
+
+// ListDepositAddressesParams filter GET /v1/deposit-addresses. Empty fields are omitted.
+type ListDepositAddressesParams struct {
+	Status DepositAddressStatus
+	Label  string
+	Cursor string
+	// Limit is 1-100.
+	Limit int
+}
+
+// ListDepositAddressesResponse is one page of deposit addresses, newest first.
+type ListDepositAddressesResponse struct {
+	DepositAddresses []DepositAddress `json:"depositAddresses"`
+	NextCursor       string           `json:"nextCursor,omitempty"`
+}
+
+// SimulateDepositResponse is the body of POST /v1/deposit-addresses/{id}/simulate: the test
+// deposit order, settled like any test-mode order.
+type SimulateDepositResponse struct {
+	Order Order `json:"order"`
 }
 
 // RefundStatus is a refund's lifecycle state.
