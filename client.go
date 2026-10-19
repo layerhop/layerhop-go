@@ -468,6 +468,91 @@ func (c *Client) PayInvoice(ctx context.Context, id string) (*PayInvoiceResponse
 	return &out, nil
 }
 
+// CreateDepositAddress creates a deposit address (POST /v1/deposit-addresses): your user sends
+// SrcToken to the returned Address on SrcChain, without connecting a wallet, and the provider
+// delivers DstToken to Recipient. LayerHop never holds the funds; each deposit becomes an order
+// (DepositAddressID set) with the usual order.* webhooks. The response carries an Estimate.
+// Needs an API key. Live mode may be disabled by the operator: a live key then gets a FORBIDDEN
+// APIError (test keys always work). Integrator and IntegratorFeeBps default to the client's Options.
+func (c *Client) CreateDepositAddress(ctx context.Context, p CreateDepositAddressParams) (*DepositAddress, error) {
+	if p.Integrator == "" {
+		p.Integrator = c.opts.Integrator
+	}
+	if p.IntegratorFeeBps == nil {
+		p.IntegratorFeeBps = c.opts.IntegratorFeeBps
+	}
+	var out DepositAddress
+	if err := c.do(ctx, http.MethodPost, "/deposit-addresses", nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetDepositAddress returns one of your deposit addresses with its 20 most recent deposits in
+// Deposits (GET /v1/deposit-addresses/{id}).
+func (c *Client) GetDepositAddress(ctx context.Context, id string) (*DepositAddress, error) {
+	var out DepositAddress
+	if err := c.do(ctx, http.MethodGet, "/deposit-addresses/"+url.PathEscape(id), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListDepositAddresses lists your deposit addresses of the key's mode, newest first
+// (GET /v1/deposit-addresses).
+func (c *Client) ListDepositAddresses(ctx context.Context, p ListDepositAddressesParams) (*ListDepositAddressesResponse, error) {
+	q := url.Values{}
+	if p.Status != "" {
+		q.Set("status", p.Status)
+	}
+	if p.Label != "" {
+		q.Set("label", p.Label)
+	}
+	if p.Cursor != "" {
+		q.Set("cursor", p.Cursor)
+	}
+	if p.Limit > 0 {
+		q.Set("limit", strconv.Itoa(p.Limit))
+	}
+	var out ListDepositAddressesResponse
+	if err := c.do(ctx, http.MethodGet, "/deposit-addresses", q, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RefreshDepositAddress checks the address for deposits now; call it when your user says they sent
+// (POST /v1/deposit-addresses/{id}/refresh). A disabled address is a CONFLICT APIError.
+func (c *Client) RefreshDepositAddress(ctx context.Context, id string) (*DepositAddress, error) {
+	var out DepositAddress
+	if err := c.do(ctx, http.MethodPost, "/deposit-addresses/"+url.PathEscape(id)+"/refresh", nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DisableDepositAddress stops tracking the address (POST /v1/deposit-addresses/{id}/disable). Tell
+// your user not to send to it again.
+func (c *Client) DisableDepositAddress(ctx context.Context, id string) (*DepositAddress, error) {
+	var out DepositAddress
+	if err := c.do(ctx, http.MethodPost, "/deposit-addresses/"+url.PathEscape(id)+"/disable", nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SimulateDeposit records a test deposit of amount (base units of the source token) on a test-mode
+// address (POST /v1/deposit-addresses/{id}/simulate). Test keys only (FORBIDDEN otherwise). The
+// order settles like any test order (amounts ending in 4001 / 4002 end refunded / failed).
+func (c *Client) SimulateDeposit(ctx context.Context, id, amount string) (*SimulateDepositResponse, error) {
+	var out SimulateDepositResponse
+	path := "/deposit-addresses/" + url.PathEscape(id) + "/simulate"
+	if err := c.do(ctx, http.MethodPost, path, nil, map[string]string{"amount": amount}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateRefund refunds (part of) a paid checkout session (POST /v1/checkout/sessions/{id}/refunds).
 // Non-custodial: the response holds a quote; build it with BuildTx, sign it from Quote.From, then
 // ReportSubmitted. The refund completes when the order fills (checkout.session.refunded).

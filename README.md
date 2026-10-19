@@ -113,6 +113,12 @@ func main() {
 | `VoidInvoice(ctx, id)` | `POST /v1/invoices/{id}/void` |
 | `GetPublicInvoice(ctx, id)` | `GET /v1/invoices/{id}/public` (public) |
 | `PayInvoice(ctx, id)` | `POST /v1/invoices/{id}/pay` (public) |
+| `CreateDepositAddress(ctx, CreateDepositAddressParams)` | `POST /v1/deposit-addresses` |
+| `ListDepositAddresses(ctx, ListDepositAddressesParams)` | `GET /v1/deposit-addresses?status=&label=&cursor=&limit=` |
+| `GetDepositAddress(ctx, id)` | `GET /v1/deposit-addresses/{id}` (with its recent `Deposits`) |
+| `RefreshDepositAddress(ctx, id)` | `POST /v1/deposit-addresses/{id}/refresh` |
+| `DisableDepositAddress(ctx, id)` | `POST /v1/deposit-addresses/{id}/disable` |
+| `SimulateDeposit(ctx, id, amount)` | `POST /v1/deposit-addresses/{id}/simulate` (test keys only) |
 | `ServiceStatus(ctx)` | `GET /v1/status` (public) |
 | `StreamWebhookEvents(ctx)` | `GET /v1/webhooks/stream` (SSE, API key) |
 | `TriggerWebhookEvent(ctx, eventType)` | `POST /v1/webhooks/trigger` (test keys only) |
@@ -237,6 +243,29 @@ pay, _ := layerhop.New(layerhop.Options{}).PayInvoice(ctx, inv.ID) // send the p
 ```
 
 Statuses: `draft` → `open` → `paid`, or `void`. See the [invoices guide](https://docs.layerhop.com/guides/invoices).
+
+## Deposit addresses
+
+Let a user swap or bridge by just **sending** tokens to an address: no wallet connection, no signing in your app. The provider (Relay) owns the address and delivers `DstToken` to `Recipient`; LayerHop never holds the funds. Each detected deposit becomes an order with `DepositAddressID` set and the usual `order.*` webhooks. Everything needs an API key.
+
+```go
+da, err := lh.CreateDepositAddress(ctx, layerhop.CreateDepositAddressParams{
+	SrcChain: "base", SrcToken: "USDC",
+	DstChain: "arbitrum", DstToken: "USDC",
+	Recipient: "0xRecipientOnArbitrum",
+	RefundTo:  "0xUserRefundAddressOnBase", // never a CEX deposit address
+	Label:     "user_42",
+	// Reusable: nil = reusable (any amount); &false + Amount = one-time address
+})
+fmt.Println(da.Address, da.Estimate.DstAmount) // show the address to your user
+
+lh.RefreshDepositAddress(ctx, da.ID)       // "I sent it": check for deposits now
+got, _ := lh.GetDepositAddress(ctx, da.ID) // got.Deposits: its 20 most recent orders
+lh.ListDepositAddresses(ctx, layerhop.ListDepositAddressesParams{Label: "user_42"})
+lh.DisableDepositAddress(ctx, da.ID)
+```
+
+Live mode may be disabled by the operator: a live key then gets an `*APIError` with code `FORBIDDEN`. Test keys always work, and `SimulateDeposit(ctx, da.ID, "25000000")` records a test deposit that settles like any test order. Deposits under $1 may not be processed.
 
 ## Refunds
 
