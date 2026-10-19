@@ -142,6 +142,13 @@ type Approval struct {
 	Amount  string `json:"amount"`
 }
 
+// EvmCall is a plain EVM call: target, hex calldata and native value in wei.
+type EvmCall struct {
+	To    string `json:"to"`
+	Data  string `json:"data"`
+	Value string `json:"value"`
+}
+
 // BuiltTx is the transaction for the user's wallet, discriminated by VM ("evm" | "svm").
 type BuiltTx struct {
 	VM string `json:"vm"`
@@ -152,6 +159,9 @@ type BuiltTx struct {
 	Data     string    `json:"data,omitempty"`
 	Value    string    `json:"value,omitempty"`
 	Approval *Approval `json:"approval,omitempty"`
+	// ExtraTxs are further calls to send after the main transaction, in order (e.g. LayerHop's fee
+	// transfer on a same-token checkout payment). Report the main transaction's hash.
+	ExtraTxs []EvmCall `json:"extraTxs,omitempty"`
 
 	// SVM fields.
 	// SerializedTx is a base64 serialized VersionedTransaction.
