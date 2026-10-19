@@ -28,6 +28,15 @@ const (
 	EventCheckoutSessionRefunded      WebhookEventType = "checkout.session.refunded"
 	EventInvoiceSent                  WebhookEventType = "invoice.sent"
 	EventInvoicePaid                  WebhookEventType = "invoice.paid"
+	EventSubscriptionCreated          WebhookEventType = "subscription.created"
+	EventSubscriptionRenewed          WebhookEventType = "subscription.renewed"
+	EventSubscriptionPastDue          WebhookEventType = "subscription.past_due"
+	EventSubscriptionCanceled         WebhookEventType = "subscription.canceled"
+	EventLimitOrderOpened             WebhookEventType = "limit_order.opened"
+	EventLimitOrderFilled             WebhookEventType = "limit_order.filled"
+	EventLimitOrderCancelled          WebhookEventType = "limit_order.cancelled"
+	EventLimitOrderExpired            WebhookEventType = "limit_order.expired"
+	EventLimitOrderFailed             WebhookEventType = "limit_order.failed"
 )
 
 // WebhookEvent is the JSON body LayerHop POSTs to your webhook endpoints.
@@ -45,12 +54,17 @@ type WebhookEvent struct {
 
 // WebhookEventData holds the objects an event is about: Order for order.* events, Session for
 // checkout.session.* events (plus Refund for checkout.session.refunded), Invoice for invoice.*
-// events (plus the paying Session for invoice.paid).
+// events (plus the paying Session for invoice.paid), Subscription for subscription.* events (plus
+// Invoice for subscription.renewed and subscription.past_due), LimitOrder for limit_order.* events
+// (plus the fill's Order in Fill for limit_order.filled, sent for every fill, partial ones included).
 type WebhookEventData struct {
-	Order   *Order           `json:"order,omitempty"`
-	Session *CheckoutSession `json:"session,omitempty"`
-	Refund  *Refund          `json:"refund,omitempty"`
-	Invoice *Invoice         `json:"invoice,omitempty"`
+	Order        *Order           `json:"order,omitempty"`
+	Session      *CheckoutSession `json:"session,omitempty"`
+	Refund       *Refund          `json:"refund,omitempty"`
+	Invoice      *Invoice         `json:"invoice,omitempty"`
+	Subscription *Subscription    `json:"subscription,omitempty"`
+	LimitOrder   *LimitOrder      `json:"limitOrder,omitempty"`
+	Fill         *Order           `json:"fill,omitempty"`
 }
 
 // UnmarshalJSON decodes the event and keeps a copy of the payload in Raw.

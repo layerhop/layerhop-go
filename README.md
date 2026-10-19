@@ -119,11 +119,41 @@ func main() {
 | `RefreshDepositAddress(ctx, id)` | `POST /v1/deposit-addresses/{id}/refresh` |
 | `DisableDepositAddress(ctx, id)` | `POST /v1/deposit-addresses/{id}/disable` |
 | `SimulateDeposit(ctx, id, amount)` | `POST /v1/deposit-addresses/{id}/simulate` (test keys only) |
+| `CreateSubscription(ctx, CreateSubscriptionParams)` | `POST /v1/subscriptions` |
+| `ListSubscriptions(ctx, ListSubscriptionsParams)` | `GET /v1/subscriptions?status=&customerEmail=&cursor=&limit=` |
+| `GetSubscription(ctx, id)` | `GET /v1/subscriptions/{id}` |
+| `UpdateSubscription(ctx, id, UpdateSubscriptionParams)` | `PATCH /v1/subscriptions/{id}` (only set fields) |
+| `CancelSubscription(ctx, id, atPeriodEnd)` | `POST /v1/subscriptions/{id}/cancel` |
+| `PauseSubscription(ctx, id)` | `POST /v1/subscriptions/{id}/pause` |
+| `ResumeSubscription(ctx, id)` | `POST /v1/subscriptions/{id}/resume` |
+| `ListSubscriptionInvoices(ctx, id)` | `GET /v1/subscriptions/{id}/invoices` |
+| `CreateLimitOrder(ctx, CreateLimitOrderParams)` | `POST /v1/limit-orders` |
+| `SubmitLimitOrder(ctx, id, signedTxBase64)` | `POST /v1/limit-orders/{id}/submit` |
+| `ListLimitOrders(ctx, ListLimitOrdersParams)` | `GET /v1/limit-orders?wallet=&status=&cursor=&limit=` |
+| `GetLimitOrder(ctx, id)` | `GET /v1/limit-orders/{id}` (with its `Fills`) |
+| `CancelLimitOrder(ctx, id)` | `POST /v1/limit-orders/{id}/cancel` |
+| `SimulateLimitOrder(ctx, id, outcome)` | `POST /v1/limit-orders/{id}/simulate` (test keys only) |
 | `ServiceStatus(ctx)` | `GET /v1/status` (public) |
 | `StreamWebhookEvents(ctx)` | `GET /v1/webhooks/stream` (SSE, API key) |
 | `TriggerWebhookEvent(ctx, eventType)` | `POST /v1/webhooks/trigger` (test keys only) |
 
 `Options` has these fields: `BaseURL` (default `https://api.layerhop.com`), `APIKey` (sent as `x-api-key`), `Channel` (default `api`), `Integrator`, `IntegratorFeeBps`, `HTTPClient` and `UserAgent`.
+
+### Gas on arrival
+
+Set `GasOnArrival: true` on `QuoteParams` to also deliver about $2 of native gas to the recipient on the destination chain, or `GasOnArrivalUsd` (0.5-20) for another amount. Its cost comes out of `DstAmount`. Quotes that include it carry `Quote.GasOnArrival` (`Amount` in native base units, `Symbol`, `Decimals`, `Usd`); providers that can't do it, same-chain swaps, non-EVM destinations and native outputs ignore it.
+
+```go
+q, err := lh.Quote(ctx, layerhop.QuoteParams{
+	SrcChain: "solana", SrcToken: "USDC", Amount: "100000000",
+	DstChain: "base", DstToken: "USDC",
+	Sender: "9Wz...", Recipient: "0xabc...",
+	GasOnArrival: true, // or GasOnArrivalUsd: 5
+})
+if g := q.Best.GasOnArrival; g != nil {
+	fmt.Println("plus", g.Amount, g.Symbol)
+}
+```
 
 ### Watch
 
@@ -267,6 +297,56 @@ lh.DisableDepositAddress(ctx, da.ID)
 
 Live mode may be disabled by the operator: a live key then gets an `*APIError` with code `FORBIDDEN`. Test keys always work, and `SimulateDeposit(ctx, da.ID, "25000000")` records a test deposit that settles like any test order. Deposits under $1 may not be processed.
 
+## Subscriptions
+
+Recurring billing. Crypto can't be pulled from a wallet, so LayerHop issues and emails an invoice every period (`Invoice.SubscriptionID` set) and the customer pays it with any token. Unpaid past the due date, the subscription turns `past_due` with reminders (day 1 and 3) and is canceled after 7 days. Needs an API key.
+
+```go
+sub, err := lh.CreateSubscription(ctx, layerhop.CreateSubscriptionParams{
+	CustomerEmail: "ada@example.com",
+	Description:   "Pro plan",
+	Amount:        "49000000", // 49 USDC per period
+	SettleChain:   "base", SettleToken: "USDC",
+	Recipient: "0xYourPayoutAddress",
+	Interval:  layerhop.IntervalMonth, // IntervalCount: 3 = quarterly
+	// or ProductID: "prod_..." instead of Description, Amount, SettleChain, SettleToken and Recipient
+})
+fmt.Println(sub.Status, sub.NextInvoiceAt)
+
+amount := "59000000"
+lh.UpdateSubscription(ctx, sub.ID, layerhop.UpdateSubscriptionParams{Amount: &amount}) // from the next invoice
+lh.PauseSubscription(ctx, sub.ID)
+lh.ResumeSubscription(ctx, sub.ID)
+lh.CancelSubscription(ctx, sub.ID, true) // at period end; false cancels now
+invoices, _ := lh.ListSubscriptionInvoices(ctx, sub.ID)
+```
+
+Statuses: `active`, `past_due`, `paused`, `canceled`. Webhooks: `subscription.created`, `subscription.renewed` and `subscription.past_due` (with `Data.Invoice`), `subscription.canceled`. See the [subscriptions guide](https://docs.layerhop.com/guides/subscriptions).
+
+## Limit orders
+
+Solana limit orders (beta, Jupiter Trigger): sell `Amount` of `SrcToken` for at least `DstAmount` of `DstToken`. The order lives on chain and the user's wallet signs it; LayerHop's fee is written into the order (when `DstToken` is SOL, USDC or USDT). An API key is optional. Live mode may be disabled by the operator: live callers then get an `*APIError` with code `FORBIDDEN` (test keys always work).
+
+```go
+lo, err := lh.CreateLimitOrder(ctx, layerhop.CreateLimitOrderParams{
+	Wallet:   "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+	SrcToken: "USDC", DstToken: "SOL",
+	Amount:    "100000000", // 100 USDC
+	DstAmount: "600000000", // at least 0.6 SOL
+	// ExpiresAt: unix seconds; 0 = good till cancelled
+})
+// Sign lo.Tx.SerializedTx with the wallet (sign only), then:
+r, err := lh.SubmitLimitOrder(ctx, lo.ID, signedBase64) // r.LimitOrder.Status == "open"
+
+got, _ := lh.GetLimitOrder(ctx, lo.ID) // got.Fills: orders with LimitOrderID set
+c, _ := lh.CancelLimitOrder(ctx, lo.ID)
+if c.Tx != nil { // open order: sign the cancel tx and submit it the same way
+	lh.SubmitLimitOrder(ctx, lo.ID, signedCancelBase64)
+}
+```
+
+Statuses: `built` → `open` → `filled`, or `cancelled`, `expired`, `failed`. Webhooks: `limit_order.opened`, `limit_order.filled` (every fill, with `Data.Fill`), `limit_order.cancelled`, `limit_order.expired`, `limit_order.failed`. In test mode, `SimulateLimitOrder(ctx, lo.ID, layerhop.SimulatePartialFill)` fills, half-fills or expires an open order. See the [limit orders guide](https://docs.layerhop.com/guides/limit-and-recurring-orders).
+
 ## Refunds
 
 Refunds are non-custodial: you sign them from your own wallet (by default the session's payout address). LayerHop routes the settlement token back to the payer's original chain and token (`To: layerhop.RefundToOriginal`, the default) or sends the settlement token itself (`layerhop.RefundToSettlement`). Leave `Amount` empty to refund everything not yet refunded, or set it for a partial refund.
@@ -319,7 +399,7 @@ The signature is `t=<unix>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`. By defau
 
 ### Webhook tools
 
-With an API key, `StreamWebhookEvents` yields your account's webhook events (in the key's live or test mode) as they are created. Each `*WebhookEvent` has typed `Data.Order` / `Data.Session` and the exact payload in `Raw`. `TriggerWebhookEvent` creates a sample event in test mode (test keys only; a live key returns a `FORBIDDEN` `*APIError`).
+With an API key, `StreamWebhookEvents` yields your account's webhook events (in the key's live or test mode) as they are created. Each `*WebhookEvent` has typed `Data.Order` / `Data.Session` / `Data.Invoice` / `Data.Subscription` / `Data.LimitOrder` and the exact payload in `Raw`. `TriggerWebhookEvent` creates a sample event in test mode (test keys only; a live key returns a `FORBIDDEN` `*APIError`).
 
 ```go
 lh := layerhop.New(layerhop.Options{APIKey: "lh_test_..."})

@@ -96,6 +96,26 @@ type QuoteParams struct {
 	Recipient string
 	// SlippageBps defaults to 50 when zero.
 	SlippageBps int
+	// GasOnArrival also delivers native gas to Recipient on the destination chain, worth $2 by
+	// default (sent as gasOnArrival=true). Ignored for same-chain swaps, non-EVM destinations and
+	// native outputs; providers that can't do it ignore it (check Quote.GasOnArrival).
+	GasOnArrival bool
+	// GasOnArrivalUsd sets the USD value of that gas (0.5-20) and implies GasOnArrival (sent as
+	// gasOnArrivalUsd). Zero means the default.
+	GasOnArrivalUsd float64
+}
+
+// GasOnArrival is native gas a route delivers to the recipient on top of DstAmount. Its cost is
+// already taken out of DstAmount.
+type GasOnArrival struct {
+	// Amount is in base units of the destination chain's native token.
+	Amount string `json:"amount"`
+	// Token is the native token address on the destination chain (0x000…000).
+	Token    string `json:"token"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
+	// Usd is the USD value at quote time, nil when unknown.
+	Usd *float64 `json:"usd,omitempty"`
 }
 
 // FeeBreakdown describes the fees applied to a quote.
@@ -117,6 +137,8 @@ type Quote struct {
 	Fees             FeeBreakdown `json:"fees"`
 	// ExpiresAt is in unix seconds.
 	ExpiresAt int64 `json:"expiresAt"`
+	// GasOnArrival is set when gas on arrival was requested and this route includes it.
+	GasOnArrival *GasOnArrival `json:"gasOnArrival,omitempty"`
 }
 
 // ProviderFailure is a provider that failed while the request as a whole succeeded.
@@ -244,9 +266,11 @@ type Order struct {
 	// DepositAddressID is the deposit address this order came from, if any.
 	DepositAddressID string `json:"depositAddressId,omitempty"`
 	// RefundID is the checkout refund this order executes, if any.
-	RefundID  string `json:"refundId,omitempty"`
-	CreatedAt string `json:"createdAt,omitempty"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
+	RefundID string `json:"refundId,omitempty"`
+	// LimitOrderID is the limit order this order is a fill of, if any (QuoteID starts with "lof_").
+	LimitOrderID string `json:"limitOrderId,omitempty"`
+	CreatedAt    string `json:"createdAt,omitempty"`
+	UpdatedAt    string `json:"updatedAt,omitempty"`
 }
 
 // ListOrdersParams filter GET /v1/orders. Empty fields are omitted.
@@ -643,11 +667,13 @@ type Invoice struct {
 	CustomerEmail string `json:"customerEmail,omitempty"`
 	Recipient     string `json:"recipient,omitempty"`
 	// SessionID is the checkout session that pays (or last tried to pay) the invoice.
-	SessionID     string `json:"sessionId,omitempty"`
-	SentAt        string `json:"sentAt,omitempty"`
-	ReceiptSentAt string `json:"receiptSentAt,omitempty"`
-	VoidedAt      string `json:"voidedAt,omitempty"`
-	UpdatedAt     string `json:"updatedAt,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
+	// SubscriptionID is the subscription this invoice bills a period of, if any.
+	SubscriptionID string `json:"subscriptionId,omitempty"`
+	SentAt         string `json:"sentAt,omitempty"`
+	ReceiptSentAt  string `json:"receiptSentAt,omitempty"`
+	VoidedAt       string `json:"voidedAt,omitempty"`
+	UpdatedAt      string `json:"updatedAt,omitempty"`
 }
 
 // ListInvoicesParams filter GET /v1/invoices. Empty fields are omitted.
@@ -776,6 +802,310 @@ type ListDepositAddressesResponse struct {
 // deposit order, settled like any test-mode order.
 type SimulateDepositResponse struct {
 	Order Order `json:"order"`
+}
+
+// SubscriptionStatus is a subscription's state.
+type SubscriptionStatus = string
+
+// Subscription statuses.
+const (
+	// SubscriptionActive bills each period.
+	SubscriptionActive SubscriptionStatus = "active"
+	// SubscriptionPastDue has an invoice unpaid past its due date: reminders go out and renewals wait.
+	SubscriptionPastDue SubscriptionStatus = "past_due"
+	// SubscriptionPaused issues no invoices or reminders until resumed.
+	SubscriptionPaused SubscriptionStatus = "paused"
+	// SubscriptionCanceled is final: canceled by you, or after 7 days past due.
+	SubscriptionCanceled SubscriptionStatus = "canceled"
+)
+
+// SubscriptionInterval is the billing period unit.
+type SubscriptionInterval = string
+
+// Subscription intervals. Months and years keep the start's day of month (clamped to short months).
+const (
+	IntervalDay   SubscriptionInterval = "day"
+	IntervalWeek  SubscriptionInterval = "week"
+	IntervalMonth SubscriptionInterval = "month"
+	IntervalYear  SubscriptionInterval = "year"
+)
+
+// CreateSubscriptionParams are the body of POST /v1/subscriptions. Empty optional fields are
+// omitted. Set ProductID to bill a product's price, settlement token and payout address, or Amount,
+// SettleChain, SettleToken and Recipient (plus Description) instead.
+type CreateSubscriptionParams struct {
+	// CustomerEmail receives each period's invoice and the reminders.
+	CustomerEmail string               `json:"customerEmail"`
+	Interval      SubscriptionInterval `json:"interval"`
+	// IntervalCount bills every IntervalCount intervals (1-365; API default 1). 3 + IntervalMonth
+	// is quarterly.
+	IntervalCount int    `json:"intervalCount,omitempty"`
+	ProductID     string `json:"productId,omitempty"`
+	// Amount is the price per period in base units of the settlement token.
+	Amount string `json:"amount,omitempty"`
+	// SettleChain is a chain id or slug: ethereum, arbitrum, base, optimism, bsc, polygon or solana.
+	SettleChain string `json:"settleChain,omitempty"`
+	// SettleToken is "USDC" or "USDT" (or its address) on SettleChain.
+	SettleToken string `json:"settleToken,omitempty"`
+	// Recipient is your payout address on the settlement chain.
+	Recipient string `json:"recipient,omitempty"`
+	// Description is the invoice line item ("Pro plan"); required without ProductID.
+	Description  string `json:"description,omitempty"`
+	CustomerName string `json:"customerName,omitempty"`
+	MerchantName string `json:"merchantName,omitempty"`
+	// Memo is a note on every invoice.
+	Memo string `json:"memo,omitempty"`
+	// DaysUntilDue is the days after an invoice is issued that it is due (0-60; API default 3 when
+	// nil).
+	DaysUntilDue *int `json:"daysUntilDue,omitempty"`
+	// StartAt is the ISO 8601 date-time of the first period and invoice (default now, at most 366
+	// days ahead).
+	StartAt string `json:"startAt,omitempty"`
+	// Metadata holds up to 20 string values, returned in the API and webhooks.
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// UpdateSubscriptionParams are the body of PATCH /v1/subscriptions/{id}: only non-nil fields are
+// sent, and changes apply from the next invoice. A pointer to "" clears a nullable field
+// (CustomerName, MerchantName, Memo) by sending null; a non-nil empty Metadata sends null.
+// CancelAtPeriodEnd true schedules a cancel at the end of the current period; false undoes it.
+type UpdateSubscriptionParams struct {
+	CustomerEmail     *string
+	CustomerName      *string
+	MerchantName      *string
+	Description       *string
+	Memo              *string
+	Amount            *string
+	DaysUntilDue      *int
+	Metadata          map[string]string
+	CancelAtPeriodEnd *bool
+}
+
+// MarshalJSON sends only the fields that are set.
+func (p UpdateSubscriptionParams) MarshalJSON() ([]byte, error) {
+	m := map[string]any{}
+	set := func(key string, v *string) {
+		if v != nil {
+			m[key] = *v
+		}
+	}
+	nullable := func(key string, v *string) {
+		if v == nil {
+			return
+		}
+		if *v == "" {
+			m[key] = nil
+		} else {
+			m[key] = *v
+		}
+	}
+	set("customerEmail", p.CustomerEmail)
+	nullable("customerName", p.CustomerName)
+	nullable("merchantName", p.MerchantName)
+	set("description", p.Description)
+	nullable("memo", p.Memo)
+	set("amount", p.Amount)
+	if p.DaysUntilDue != nil {
+		m["daysUntilDue"] = *p.DaysUntilDue
+	}
+	if p.Metadata != nil {
+		if len(p.Metadata) == 0 {
+			m["metadata"] = nil
+		} else {
+			m["metadata"] = p.Metadata
+		}
+	}
+	if p.CancelAtPeriodEnd != nil {
+		m["cancelAtPeriodEnd"] = *p.CancelAtPeriodEnd
+	}
+	return json.Marshal(m)
+}
+
+// Subscription bills a customer every period: LayerHop issues and emails an invoice per period,
+// paid through checkout with any token ("subscription"). Nullable strings decode to "".
+type Subscription struct {
+	ID            string             `json:"id"`
+	Object        string             `json:"object"`
+	Livemode      bool               `json:"livemode"`
+	Status        SubscriptionStatus `json:"status"`
+	CustomerEmail string             `json:"customerEmail"`
+	CustomerName  string             `json:"customerName,omitempty"`
+	MerchantName  string             `json:"merchantName,omitempty"`
+	Description   string             `json:"description"`
+	Memo          string             `json:"memo,omitempty"`
+	ProductID     string             `json:"productId,omitempty"`
+	// Amount is the price per period in base units of the settlement token.
+	Amount        string               `json:"amount"`
+	Settlement    CheckoutSettlement   `json:"settlement"`
+	Recipient     string               `json:"recipient"`
+	Interval      SubscriptionInterval `json:"interval"`
+	IntervalCount int                  `json:"intervalCount"`
+	DaysUntilDue  int                  `json:"daysUntilDue"`
+	// CurrentPeriodStart is the start of the period last invoiced ("" before the first invoice).
+	CurrentPeriodStart string `json:"currentPeriodStart,omitempty"`
+	CurrentPeriodEnd   string `json:"currentPeriodEnd,omitempty"`
+	// NextInvoiceAt is when the next invoice is issued ("" when paused or canceled).
+	NextInvoiceAt string `json:"nextInvoiceAt,omitempty"`
+	// CancelAt is the scheduled cancel (the end of the current period).
+	CancelAt          string `json:"cancelAt,omitempty"`
+	CancelAtPeriodEnd bool   `json:"cancelAtPeriodEnd"`
+	CanceledAt        string `json:"canceledAt,omitempty"`
+	// CancellationReason is "requested" (you canceled) or "unpaid" (7 days past due).
+	CancellationReason string `json:"cancellationReason,omitempty"`
+	PausedAt           string `json:"pausedAt,omitempty"`
+	// LatestInvoiceID is the invoice of the current period.
+	LatestInvoiceID string            `json:"latestInvoiceId,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	CreatedAt       string            `json:"createdAt"`
+	UpdatedAt       string            `json:"updatedAt"`
+}
+
+// ListSubscriptionsParams filter GET /v1/subscriptions. Empty fields are omitted.
+type ListSubscriptionsParams struct {
+	Status        SubscriptionStatus
+	CustomerEmail string
+	Cursor        string
+	// Limit is 1-100.
+	Limit int
+}
+
+// ListSubscriptionsResponse is one page of subscriptions, newest first.
+type ListSubscriptionsResponse struct {
+	Subscriptions []Subscription `json:"subscriptions"`
+	NextCursor    string         `json:"nextCursor,omitempty"`
+}
+
+// LimitOrderStatus is a limit order's state.
+type LimitOrderStatus = string
+
+// Limit order statuses. Filled, Cancelled, Expired and Failed are final.
+const (
+	// LimitOrderBuilt: the transaction was built but not submitted yet.
+	LimitOrderBuilt LimitOrderStatus = "built"
+	// LimitOrderOpen: live on chain, possibly partly filled.
+	LimitOrderOpen LimitOrderStatus = "open"
+	// LimitOrderFilled: fully filled.
+	LimitOrderFilled LimitOrderStatus = "filled"
+	// LimitOrderCancelled: cancelled by the wallet; the unfilled input was returned.
+	LimitOrderCancelled LimitOrderStatus = "cancelled"
+	// LimitOrderExpired: reached ExpiresAt.
+	LimitOrderExpired LimitOrderStatus = "expired"
+	// LimitOrderFailed: the order transaction never showed up on chain.
+	LimitOrderFailed LimitOrderStatus = "failed"
+)
+
+// Outcomes for SimulateLimitOrder (test mode only).
+const (
+	// SimulateFill fills the rest of the order.
+	SimulateFill = "fill"
+	// SimulatePartialFill fills half of the rest.
+	SimulatePartialFill = "partial_fill"
+	// SimulateExpire expires the order.
+	SimulateExpire = "expire"
+)
+
+// CreateLimitOrderParams are the body of POST /v1/limit-orders. Empty optional fields are omitted.
+type CreateLimitOrderParams struct {
+	// Chain is only "solana" (or "7565164") for now; the API default applies when empty.
+	Chain string `json:"chain,omitempty"`
+	// Wallet is the maker wallet (base58): it signs the order and receives the output.
+	Wallet string `json:"wallet"`
+	// SrcToken is the token to sell: mint, curated symbol ("USDC") or "SOL".
+	SrcToken string `json:"srcToken"`
+	// DstToken is the token to buy. LayerHop's fee applies when it is SOL, USDC or USDT.
+	DstToken string `json:"dstToken"`
+	// Amount is the base units of SrcToken to sell (worth at least $5).
+	Amount string `json:"amount"`
+	// DstAmount is the minimum base units of DstToken for the whole Amount: the limit price is
+	// DstAmount / Amount.
+	DstAmount string `json:"dstAmount"`
+	// ExpiresAt is unix seconds, at least 60 s ahead. Zero means good-till-cancelled.
+	ExpiresAt int64 `json:"expiresAt,omitempty"`
+	// Channel defaults to the client's Options.Channel when empty.
+	Channel string `json:"channel,omitempty"`
+	// Metadata holds up to 20 string values.
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// Integrator and IntegratorFeeBps default to the client's Options when empty / nil.
+	Integrator       string `json:"integrator,omitempty"`
+	IntegratorFeeBps *int   `json:"integratorFeeBps,omitempty"`
+}
+
+// LimitOrderFees are the fees written into the on-chain order (OurFeeBps is 0 when DstToken
+// carries no fee). Integrator is "" without a partner.
+type LimitOrderFees struct {
+	OurFeeBps        int    `json:"ourFeeBps"`
+	IntegratorFeeBps int    `json:"integratorFeeBps"`
+	Integrator       string `json:"integrator,omitempty"`
+}
+
+// LimitOrder is a Solana limit order (Jupiter Trigger) ("limit_order"). The order lives on chain;
+// each fill is recorded as an Order with LimitOrderID set. Nullable strings decode to "".
+type LimitOrder struct {
+	ID           string           `json:"id"`
+	Object       string           `json:"object"`
+	Livemode     bool             `json:"livemode"`
+	Status       LimitOrderStatus `json:"status"`
+	StatusDetail string           `json:"statusDetail,omitempty"`
+	// Provider is "jupiter" (live) or "sandbox" (test mode).
+	Provider ProviderID `json:"provider"`
+	// ChainID is always SolanaChainID for now.
+	ChainID  int64  `json:"chainId"`
+	Wallet   string `json:"wallet"`
+	SrcToken string `json:"srcToken"`
+	DstToken string `json:"dstToken"`
+	// Amount is the input in base units; DstAmount the minimum output for the whole order.
+	Amount    string         `json:"amount"`
+	DstAmount string         `json:"dstAmount"`
+	ExpiresAt string         `json:"expiresAt,omitempty"`
+	Fees      LimitOrderFees `json:"fees"`
+	// ProviderOrderID is the provider's order id (Jupiter: the order account).
+	ProviderOrderID string `json:"providerOrderId"`
+	FilledAmount    string `json:"filledAmount"`
+	FilledDstAmount string `json:"filledDstAmount"`
+	FillCount       int    `json:"fillCount"`
+	OpenTxHash      string `json:"openTxHash,omitempty"`
+	// CancelTxHash is set once a cancel tx was submitted; the status turns cancelled when confirmed.
+	CancelTxHash string            `json:"cancelTxHash,omitempty"`
+	Channel      string            `json:"channel"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	CreatedAt    string            `json:"createdAt"`
+	UpdatedAt    string            `json:"updatedAt"`
+	// Tx is the unsigned transaction for Wallet to sign (SubmitViaAPI: sign only, then
+	// SubmitLimitOrder). Set by CreateLimitOrder only.
+	Tx *BuiltTx `json:"tx,omitempty"`
+	// Fills are the order's fills, newest first (GetLimitOrder only).
+	Fills []Order `json:"fills,omitempty"`
+}
+
+// ListLimitOrdersParams filter GET /v1/limit-orders. Empty fields are omitted.
+type ListLimitOrdersParams struct {
+	// Wallet lists that wallet's orders; without it, the API key's account.
+	Wallet string
+	Status LimitOrderStatus
+	Cursor string
+	// Limit is 1-100.
+	Limit int
+}
+
+// ListLimitOrdersResponse is one page of limit orders, newest first.
+type ListLimitOrdersResponse struct {
+	LimitOrders []LimitOrder `json:"limitOrders"`
+	NextCursor  string       `json:"nextCursor,omitempty"`
+}
+
+// SubmitLimitOrderResponse is the body of POST /v1/limit-orders/{id}/submit.
+type SubmitLimitOrderResponse struct {
+	LimitOrder LimitOrder `json:"limitOrder"`
+	// TxHash is the landed transaction's signature.
+	TxHash string `json:"txHash"`
+}
+
+// CancelLimitOrderResponse is the body of POST /v1/limit-orders/{id}/cancel. Tx is the unsigned
+// cancel transaction to sign and SubmitLimitOrder, or nil when a never-submitted (built) order was
+// cancelled at once.
+type CancelLimitOrderResponse struct {
+	LimitOrder LimitOrder `json:"limitOrder"`
+	Tx         *BuiltTx   `json:"tx"`
 }
 
 // RefundStatus is a refund's lifecycle state.

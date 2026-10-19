@@ -168,6 +168,11 @@ func (c *Client) Quote(ctx context.Context, p QuoteParams) (*QuoteResponse, erro
 	if c.opts.IntegratorFeeBps != nil {
 		q.Set("integratorFeeBps", strconv.Itoa(*c.opts.IntegratorFeeBps))
 	}
+	if p.GasOnArrivalUsd > 0 {
+		q.Set("gasOnArrivalUsd", strconv.FormatFloat(p.GasOnArrivalUsd, 'f', -1, 64))
+	} else if p.GasOnArrival {
+		q.Set("gasOnArrival", "true")
+	}
 	var out QuoteResponse
 	if err := c.do(ctx, http.MethodGet, "/quote", q, nil, &out); err != nil {
 		return nil, err
@@ -548,6 +553,194 @@ func (c *Client) SimulateDeposit(ctx context.Context, id, amount string) (*Simul
 	var out SimulateDepositResponse
 	path := "/deposit-addresses/" + url.PathEscape(id) + "/simulate"
 	if err := c.do(ctx, http.MethodPost, path, nil, map[string]string{"amount": amount}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateSubscription creates a subscription (POST /v1/subscriptions). Crypto can't be pulled from a
+// wallet, so LayerHop issues and emails an invoice every period; the customer pays it with any
+// token. Unpaid past the due date it turns past_due with reminders (day 1 and 3) and is canceled
+// after 7 days. Sends subscription.created. Needs an API key; an lh_test_ key creates a test-mode
+// subscription.
+func (c *Client) CreateSubscription(ctx context.Context, p CreateSubscriptionParams) (*Subscription, error) {
+	var out Subscription
+	if err := c.do(ctx, http.MethodPost, "/subscriptions", nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetSubscription returns one of your subscriptions (GET /v1/subscriptions/{id}).
+func (c *Client) GetSubscription(ctx context.Context, id string) (*Subscription, error) {
+	var out Subscription
+	if err := c.do(ctx, http.MethodGet, "/subscriptions/"+url.PathEscape(id), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListSubscriptions lists your subscriptions of the key's mode, newest first (GET /v1/subscriptions).
+func (c *Client) ListSubscriptions(ctx context.Context, p ListSubscriptionsParams) (*ListSubscriptionsResponse, error) {
+	q := url.Values{}
+	if p.Status != "" {
+		q.Set("status", p.Status)
+	}
+	if p.CustomerEmail != "" {
+		q.Set("customerEmail", p.CustomerEmail)
+	}
+	if p.Cursor != "" {
+		q.Set("cursor", p.Cursor)
+	}
+	if p.Limit > 0 {
+		q.Set("limit", strconv.Itoa(p.Limit))
+	}
+	var out ListSubscriptionsResponse
+	if err := c.do(ctx, http.MethodGet, "/subscriptions", q, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateSubscription changes only the fields that are set, from the next invoice on
+// (PATCH /v1/subscriptions/{id}). A canceled subscription is a CONFLICT APIError.
+func (c *Client) UpdateSubscription(ctx context.Context, id string, p UpdateSubscriptionParams) (*Subscription, error) {
+	var out Subscription
+	if err := c.do(ctx, http.MethodPatch, "/subscriptions/"+url.PathEscape(id), nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CancelSubscription cancels a subscription (POST /v1/subscriptions/{id}/cancel): now when
+// atPeriodEnd is false (no more invoices; subscription.canceled is sent), or at the end of the
+// current period when true (CancelAtPeriodEnd set; undo it with UpdateSubscription).
+func (c *Client) CancelSubscription(ctx context.Context, id string, atPeriodEnd bool) (*Subscription, error) {
+	var out Subscription
+	path := "/subscriptions/" + url.PathEscape(id) + "/cancel"
+	if err := c.do(ctx, http.MethodPost, path, nil, map[string]bool{"atPeriodEnd": atPeriodEnd}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PauseSubscription pauses an active subscription: no invoices or reminders until resumed
+// (POST /v1/subscriptions/{id}/pause). Any other status is a CONFLICT APIError.
+func (c *Client) PauseSubscription(ctx context.Context, id string) (*Subscription, error) {
+	var out Subscription
+	if err := c.do(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(id)+"/pause", nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResumeSubscription resumes a paused subscription (POST /v1/subscriptions/{id}/resume): billing
+// continues on the paid period's schedule, or a new period starts now. Any other status is a
+// CONFLICT APIError.
+func (c *Client) ResumeSubscription(ctx context.Context, id string) (*Subscription, error) {
+	var out Subscription
+	if err := c.do(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(id)+"/resume", nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListSubscriptionInvoices returns the invoices issued for a subscription (up to 100), newest first
+// (GET /v1/subscriptions/{id}/invoices).
+func (c *Client) ListSubscriptionInvoices(ctx context.Context, id string) ([]Invoice, error) {
+	var out struct {
+		Invoices []Invoice `json:"invoices"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/subscriptions/"+url.PathEscape(id)+"/invoices", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Invoices, nil
+}
+
+// CreateLimitOrder creates a Solana limit order (beta, Jupiter Trigger) and returns it with the
+// unsigned Tx (POST /v1/limit-orders). Have Wallet sign it (sign only: Tx.SubmitViaAPI), then
+// SubmitLimitOrder; the order becomes open and limit_order.opened is sent. Each fill is an Order with
+// LimitOrderID set and a limit_order.filled webhook. An API key is optional. Live mode may be
+// disabled by the operator: live callers then get a FORBIDDEN APIError (test keys always work).
+// Channel, Integrator and IntegratorFeeBps default to the client's Options.
+func (c *Client) CreateLimitOrder(ctx context.Context, p CreateLimitOrderParams) (*LimitOrder, error) {
+	if p.Channel == "" {
+		p.Channel = c.opts.Channel
+	}
+	if p.Integrator == "" {
+		p.Integrator = c.opts.Integrator
+	}
+	if p.IntegratorFeeBps == nil {
+		p.IntegratorFeeBps = c.opts.IntegratorFeeBps
+	}
+	var out LimitOrder
+	if err := c.do(ctx, http.MethodPost, "/limit-orders", nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SubmitLimitOrder sends the wallet-signed create or cancel transaction (base64) of a limit order
+// (POST /v1/limit-orders/{id}/submit). Nothing to submit is a CONFLICT APIError.
+func (c *Client) SubmitLimitOrder(ctx context.Context, id, signedTx string) (*SubmitLimitOrderResponse, error) {
+	var out SubmitLimitOrderResponse
+	path := "/limit-orders/" + url.PathEscape(id) + "/submit"
+	if err := c.do(ctx, http.MethodPost, path, nil, map[string]string{"signedTransaction": signedTx}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetLimitOrder returns a limit order with its Fills, newest first (GET /v1/limit-orders/{id}).
+func (c *Client) GetLimitOrder(ctx context.Context, id string) (*LimitOrder, error) {
+	var out LimitOrder
+	if err := c.do(ctx, http.MethodGet, "/limit-orders/"+url.PathEscape(id), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListLimitOrders lists the limit orders of Wallet, or without it of the API key's account, newest
+// first (GET /v1/limit-orders). Wallet is required without an API key.
+func (c *Client) ListLimitOrders(ctx context.Context, p ListLimitOrdersParams) (*ListLimitOrdersResponse, error) {
+	q := url.Values{}
+	if p.Wallet != "" {
+		q.Set("wallet", p.Wallet)
+	}
+	if p.Status != "" {
+		q.Set("status", p.Status)
+	}
+	if p.Cursor != "" {
+		q.Set("cursor", p.Cursor)
+	}
+	if p.Limit > 0 {
+		q.Set("limit", strconv.Itoa(p.Limit))
+	}
+	var out ListLimitOrdersResponse
+	if err := c.do(ctx, http.MethodGet, "/limit-orders", q, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CancelLimitOrder cancels a limit order (POST /v1/limit-orders/{id}/cancel). For an open order it
+// returns the cancel Tx to sign and SubmitLimitOrder; a never-submitted (built) order is cancelled
+// at once (Tx nil). Any other status is a CONFLICT APIError.
+func (c *Client) CancelLimitOrder(ctx context.Context, id string) (*CancelLimitOrderResponse, error) {
+	var out CancelLimitOrderResponse
+	if err := c.do(ctx, http.MethodPost, "/limit-orders/"+url.PathEscape(id)+"/cancel", nil, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SimulateLimitOrder fills, half-fills or expires an open test-mode order (outcome SimulateFill,
+// SimulatePartialFill or SimulateExpire), applied by the worker within seconds with the usual
+// limit_order.* webhooks (POST /v1/limit-orders/{id}/simulate). Test keys only (FORBIDDEN otherwise).
+func (c *Client) SimulateLimitOrder(ctx context.Context, id, outcome string) (*LimitOrder, error) {
+	var out LimitOrder
+	path := "/limit-orders/" + url.PathEscape(id) + "/simulate"
+	if err := c.do(ctx, http.MethodPost, path, nil, map[string]string{"outcome": outcome}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
