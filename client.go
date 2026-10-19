@@ -22,7 +22,7 @@ import (
 const DefaultBaseURL = "https://api.layerhop.com"
 
 // Version is the SDK version, sent in the User-Agent header.
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 // Options configure a Client. The zero value is valid.
 type Options struct {
