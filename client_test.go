@@ -88,6 +88,39 @@ func TestQuote(t *testing.T) {
 	}
 }
 
+func TestQuoteGasOnArrival(t *testing.T) {
+	resp := strings.Replace(quoteJSON, `"expiresAt":1760000030},"quotes"`,
+		`"expiresAt":1760000030,"gasOnArrival":{"amount":"512000000000000","token":"0x0000000000000000000000000000000000000000","symbol":"ETH","decimals":18,"usd":2}},"quotes"`, 1)
+	c, rec := newServer(t, 200, resp)
+	p := QuoteParams{SrcChain: "solana", SrcToken: "USDC", Amount: "100000000", DstChain: "base", DstToken: "USDC", Sender: "9Wz", Recipient: "0xabc", GasOnArrival: true}
+	q, err := c.Quote(ctx(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := q.Best.GasOnArrival
+	if g == nil || g.Amount != "512000000000000" || g.Symbol != "ETH" || g.Decimals != 18 || g.Usd == nil || *g.Usd != 2 || q.Quotes[0].GasOnArrival != nil {
+		t.Fatalf("gas on arrival: %+v", g)
+	}
+	if !strings.Contains(rec.query, "&gasOnArrival=true&") || strings.Contains(rec.query, "gasOnArrivalUsd") {
+		t.Fatalf("query: %s", rec.query)
+	}
+
+	c, rec = newServer(t, 200, quoteJSON)
+	p.GasOnArrivalUsd = 5.5
+	if _, err := c.Quote(ctx(), p); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec.query, "&gasOnArrivalUsd=5.5&") || strings.Contains(rec.query, "gasOnArrival=") {
+		t.Fatalf("usd query: %s", rec.query)
+	}
+
+	c, rec = newServer(t, 200, quoteJSON)
+	p.GasOnArrival, p.GasOnArrivalUsd = false, 0
+	if _, err := c.Quote(ctx(), p); err != nil || strings.Contains(rec.query, "gasOnArrival") {
+		t.Fatalf("off: %s %v", rec.query, err)
+	}
+}
+
 func TestBuildTxEvmAndSvm(t *testing.T) {
 	c, rec := newServer(t, 200, `{"quoteId":"q_1","provider":"relay","tx":{"vm":"evm","chainId":8453,"to":"0xto","data":"0xdead","value":"0","approval":{"token":"0xt","spender":"0xs","amount":"100"}}}`)
 	tx, err := c.BuildTx(ctx(), "q_1")
